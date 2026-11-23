@@ -2,6 +2,7 @@
 
   OUT/data/<набор>/<набор>-NNNNN.tar.zst   части (или .tar.xz)
   OUT/manifest/<набор>/<набор>-NNNNN.jsonl  манифест части: путь, размер, время изменения, SHA-256
+  OUT/manifest/<набор>/<набор>-NNNNN.meta.json  параметры части (с формата 2)
   OUT/manifest/<набор>/plan.jsonl.gz        план упаковки
   OUT/manifest/<набор>/pack_settings.json   параметры набора
   OUT/manifest/<набор>/summary.json         сводка
@@ -11,9 +12,10 @@
 
 import json
 import os
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
-from shardkeep.codecs import EXT_BY_CODEC
+from shardkeep.codecs import EXT_BY_CODEC, codec_of
 from shardkeep.errors import UserError
 
 
@@ -35,6 +37,19 @@ def shard_file(out, name, i, codec):
 
 def manifest_file(out, name, i):
     return os.path.join(manifest_dir(out, name), shard_base(name, i) + ".jsonl")
+
+
+def shard_meta_file(out, name, i):
+    return os.path.join(manifest_dir(out, name), shard_base(name, i) + ".meta.json")
+
+
+def read_shard_meta(out, name, i):
+    """Параметры части или None для частей формата 1."""
+    p = shard_meta_file(out, name, i)
+    if not os.path.exists(p):
+        return None
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def plan_file(out, name):
@@ -59,14 +74,23 @@ def list_names(out, name=None):
     return sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
 
 
+SHARD_RE = re.compile(r"^(?P<name>.+)-(?P<i>\d{5,})\.tar\.(?P<ext>zst|xz)$")
+MANIFEST_RE = re.compile(r"^(?P<name>.+)-(?P<i>\d{5,})\.jsonl$")
+
+
 @dataclass
 class Shard:
     path: str       # файл части
     manifest: str   # манифест части
+    index: int = -1
 
     @property
     def filename(self):
         return os.path.basename(self.path)
+
+    @property
+    def codec(self):
+        return codec_of(self.path)
 
 
 def shard_list(out, name):
@@ -81,8 +105,46 @@ def shard_list(out, name):
         base = fn.split(".tar.")[0]
         mf = os.path.join(manifest_dir(out, name), base + ".jsonl")
         if os.path.exists(mf):
-            result.append(Shard(os.path.join(d, fn), mf))
+            m = SHARD_RE.match(fn)
+            result.append(Shard(os.path.join(d, fn), mf, int(m.group("i")) if m else -1))
     return result
+
+
+@dataclass
+class SetState:
+    """Состояние набора на диске: готовые части и все, что мешает считать набор полным."""
+    name: str
+    shards: list
+    planned: object = None          # число частей по плану или None, если плана нет
+    no_data: list = field(default_factory=list)       # манифест есть, файла части нет
+    no_manifest: list = field(default_factory=list)   # файл части есть, манифеста нет (часть не дописана)
+    partial: list = field(default_factory=list)       # временные файлы .partial
+
+    @property
+    def missing_indexes(self):
+        if self.planned is None:
+            return []
+        have = {s.index for s in self.shards}
+        return [i for i in range(self.planned) if i not in have]
+
+
+def scan_set(out, name, planned=None):
+    shards = shard_list(out, name)
+    st = SetState(name, shards, planned)
+    have_data = {s.manifest for s in shards}
+    md = manifest_dir(out, name)
+    if os.path.isdir(md):
+        for fn in sorted(os.listdir(md)):
+            if MANIFEST_RE.match(fn) and os.path.join(md, fn) not in have_data:
+                st.no_data.append(fn)
+    d = data_dir(out, name)
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d)):
+            if fn.endswith(".partial"):
+                st.partial.append(fn)
+            elif SHARD_RE.match(fn) and not os.path.exists(os.path.join(md, fn.split(".tar.")[0] + ".jsonl")):
+                st.no_manifest.append(fn)
+    return st
 
 
 def read_manifest(path):

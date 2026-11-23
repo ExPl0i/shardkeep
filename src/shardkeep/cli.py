@@ -32,7 +32,7 @@ def setup_console():
 def run_pack(a):
     from shardkeep.pack import pack
     pack(a.src, a.out, name=a.name, codec=a.codec, level=a.level, threads=a.threads,
-         long_mode=not a.no_long, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env)
+         long_mode=False if a.no_long else None, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env)
     print(f"\nГотово. Следующий шаг: проверка архивов\n"
           f'  shardkeep verify "{a.out}" --src "{a.src}"' + (f" --name {a.name}" if a.name else ""))
     return 0
@@ -40,7 +40,7 @@ def run_pack(a):
 
 def run_verify(a):
     from shardkeep.verify import verify
-    return 0 if verify(a.out, name=a.name, src=a.src).ok else 1
+    return 0 if verify(a.out, name=a.name, src=a.src, allow_skipped=a.allow_skipped).ok else 1
 
 
 def run_unpack(a):
@@ -54,7 +54,7 @@ def add_pack(sub):
     p.add_argument("src", help="папка с данными")
     p.add_argument("out", help="папка для архивов (лучше на другом диске)")
     p.add_argument("--name", help="имя набора (по умолчанию имя папки)")
-    p.add_argument("--shard-gb", type=float, default=4.0,
+    p.add_argument("--shard-gb", type=float,
                    help="объем исходных данных в одной части, ГБ (по умолчанию 4)")
     p.add_argument("--codec", choices=["auto", "zstd", "xz"], default="auto")
     p.add_argument("--level", type=int, help="уровень сжатия: zstd 1–22 (по умолчанию 19), xz 0–9 (по умолчанию 9)")
@@ -70,7 +70,9 @@ def add_verify(sub):
     p = sub.add_parser("verify", help=COMMANDS["verify"], description=COMMANDS["verify"])
     p.add_argument("out", help="папка с архивами")
     p.add_argument("--name", help="проверить только этот набор")
-    p.add_argument("--src", help="исходная папка: проверить, что файлы не менялись после упаковки")
+    p.add_argument("--src", help="исходная папка: проверить, что все ее файлы упакованы и не менялись после упаковки")
+    p.add_argument("--allow-skipped", action="store_true",
+                   help="не считать ошибкой файлы, которые не удалось прочитать при упаковке")
     p.set_defaults(func=run_verify)
 
 
