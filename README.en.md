@@ -26,14 +26,14 @@ python -m venv $HOME\shardkeep-venv
 ```
 
 ```powershell
-pip install "shardkeep[hf] @ git+https://github.com/hennessyayden/shardkeep"
+pip install "shardkeep[hf] @ git+https://github.com/Expl0iD-Dev-Team/shardkeep"
 ```
 
 Linux and macOS:
 
 ```bash
 python3 -m venv ~/shardkeep-venv && . ~/shardkeep-venv/bin/activate
-pip install "shardkeep[hf] @ git+https://github.com/hennessyayden/shardkeep"
+pip install "shardkeep[hf] @ git+https://github.com/Expl0iD-Dev-Team/shardkeep"
 ```
 
 Without `[hf]`, only packing, verifying and extracting are installed. Uploading through rclone needs the [rclone program](https://rclone.org/install/); JPEG XL needs the `cjxl` and `djxl` programs from [libjxl](https://github.com/libjxl/libjxl/releases).

@@ -37,7 +37,7 @@ jobs:
           python-version: "3.13"
       - name: Make sample archives with shardkeep
         run: |
-          python -m pip install -e .
+          python -m pip install -e ".[dev]"
           python tests/ci_make_sample.py sample
       - name: Verify and extract with Python 3.8
         run: |

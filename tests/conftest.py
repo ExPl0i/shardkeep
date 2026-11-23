@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import random
+import types
 
 import pytest
 
@@ -27,7 +28,16 @@ def legacy_pack(legacy, src, out, **kw):
                            shard_gb=kw.get("shard_gb", 64 / 2**20), exclude=kw.get("exclude", []),
                            include_env=kw.get("include_env", False), hf_repo=None, github_url=None,
                            waymo=False, title=None)
-    legacy.cmd_pack(a)
+    # Исходный скрипт делит объем на время упаковки. Часы Windows идут шагами примерно по 15 мс, и крошечная
+    # тестовая часть успевает упаковаться «за ноль секунд»: деление на ноль. Подменяем часы равномерно
+    # идущими, сам скрипт не меняем.
+    real_time = legacy.time
+    ticks = iter(range(1, 10**9))
+    legacy.time = types.SimpleNamespace(monotonic=lambda: float(next(ticks)))
+    try:
+        legacy.cmd_pack(a)
+    finally:
+        legacy.time = real_time
 
 
 def write_file(root, rel, data, mtime=MTIME):
