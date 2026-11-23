@@ -23,6 +23,30 @@ jobs:
       - name: Tests
         run: python -m pytest
 
+  restore-script-py38:
+    name: restore script on Python 3.8
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: py38
+        with:
+          python-version: "3.8"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Make sample archives with shardkeep
+        run: |
+          python -m pip install -e .
+          python tests/ci_make_sample.py sample
+      - name: Verify and extract with Python 3.8
+        run: |
+          PY38="${{ steps.py38.outputs.python-path }}"
+          "$PY38" -m pip install zstandard
+          "$PY38" sample/out/pack_shards.py verify sample/out --src sample/src --name s
+          "$PY38" sample/out/pack_shards.py unpack sample/out sample/restored
+          diff -r sample/src sample/restored/s --exclude=__pycache__ --exclude=.git
+
   build:
     name: build and install wheel
     runs-on: ${{ matrix.os }}

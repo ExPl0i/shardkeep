@@ -35,9 +35,71 @@ def run_pack(a):
     pack(a.src, a.out, name=a.name, codec=a.codec, level=a.level, threads=a.threads,
          long_mode=False if a.no_long else None, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env,
          profile=a.profile)
+    from shardkeep.card import copy_restore_script, write_card
+    copy_restore_script(a.out)
+    write_card(a.out, card_overrides(a), mode="create")
     print(f"\nDone. Next step: verify the archives\n"
           f'  shardkeep verify "{a.out}" --src "{a.src}"' + (f" --name {a.name}" if a.name else ""))
     return 0
+
+
+def card_overrides(a):
+    o = {"title": a.title, "hf_repo": a.hf_repo, "github_url": a.github_url, "lang": a.lang}
+    for key in ("license", "license_name", "license_link"):
+        o[key] = getattr(a, key, None)
+    if getattr(a, "tag", None):
+        o["tags"] = a.tag
+    if getattr(a, "license_file", None):
+        from shardkeep.fsutil import read_text
+        o["license_text"] = read_text(a.license_file)
+    if getattr(a, "public", False):
+        o["private"] = False
+    elif getattr(a, "private", False):
+        o["private"] = True
+    return o
+
+
+def run_card(a):
+    from shardkeep.card import copy_restore_script, write_card
+    from shardkeep.layout import list_names, settings_file
+    from shardkeep.pack import write_summary
+    import os
+    for name in list_names(a.out):
+        if os.path.exists(settings_file(a.out, name)):
+            write_summary(a.out, name)
+    copy_restore_script(a.out)
+    status = write_card(a.out, card_overrides(a), mode="update", force=a.force, template=a.template)
+    return 1 if status == "no-markers" else 0
+
+
+def add_card_options(p, full):
+    p.add_argument("--title", help="dataset card title")
+    p.add_argument("--hf-repo", help="Hugging Face dataset repository, for example user/dataset")
+    p.add_argument("--github-url", help="URL of the code repository the data belongs to")
+    p.add_argument("--lang", choices=["en", "ru"], help="dataset card language (default en)")
+    if not full:
+        return
+    p.add_argument("--license", help="license identifier for the card metadata, for example cc-by-4.0 or other")
+    p.add_argument("--license-name", help="license name when --license is other")
+    p.add_argument("--license-link", help="link to the license terms")
+    p.add_argument("--license-file", help="text file with license terms to put into the card")
+    p.add_argument("--tag", action="append", help="tag for the card metadata (repeatable)")
+    vis = p.add_mutually_exclusive_group()
+    vis.add_argument("--private", action="store_true", help="the dataset is private (default)")
+    vis.add_argument("--public", action="store_true", help="the dataset is public")
+    p.add_argument("--template", help="custom card template (placeholders {{title}}, {{sets}}, {{restore}} and others)")
+    p.add_argument("--force", action="store_true",
+                   help="rewrite the whole card from the template (the old one is kept as README.md.bak)")
+
+
+def add_card(sub):
+    p = sub.add_parser("card", help=COMMANDS["card"], description=(
+        "Create the dataset card README.md in the archive folder, or update the parts between the "
+        "<!-- shardkeep:begin ... --> and <!-- shardkeep:end ... --> markers. Text outside the markers is never "
+        "changed. Settings are remembered in card_settings.json."))
+    p.add_argument("out", help="archive folder")
+    add_card_options(p, full=True)
+    p.set_defaults(func=run_card)
 
 
 def run_verify(a):
@@ -71,6 +133,7 @@ def add_pack(sub):
     p.add_argument("--exclude", action="append", default=[], help="name or path pattern to skip (repeatable)")
     p.add_argument("--include-env", action="store_true",
                    help="do not skip __pycache__, .git, venv and similar folders")
+    add_card_options(p, full=False)
     p.set_defaults(func=run_pack)
 
 
@@ -95,7 +158,7 @@ def add_unpack(sub):
     p.set_defaults(func=run_unpack)
 
 
-ADDERS = {"pack": add_pack, "verify": add_verify, "unpack": add_unpack}
+ADDERS = {"pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
 
 
 def build_parser():
