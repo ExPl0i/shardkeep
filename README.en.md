@@ -54,6 +54,8 @@ Without `[hf]`, only packing, verifying and extracting are installed. Uploading 
 
 Full help: `shardkeep <command> --help`.
 
+**Progress.** Long operations show a progress line with the percentage, speed, estimated time remaining (ETA) and elapsed time: packing, verifying, extracting, uploading, checking the upload, analyzing, compare-zip and the restore script. Speed is measured over the last minute, so the estimate adapts quickly when the data changes. When packing with zstd, progress counts data that is already compressed, not data that has been read: multithreaded zstd takes in input hundreds of megabytes ahead. If the output is redirected to a file, the line is printed once a minute. To turn it off: `shardkeep --no-progress <command>` or the environment variable `SHARDKEEP_NO_PROGRESS=1`.
+
 ## Scenarios
 
 In all examples `D:\work\project` is the working folder and `E:\backup\dataset` is the archive folder on another disk. Windows commands are given one per block: multi-line commands pasted into PowerShell are sometimes joined into one line.

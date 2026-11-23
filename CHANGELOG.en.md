@@ -16,3 +16,4 @@ First version of the package, based on the `pack_shards.py`, `analyze_workdir.py
 - Optional lossless conversion of JPEG to JPEG XL.
 - Standalone restore script for Python 3.8+.
 - Program messages in English, documentation in Russian and English.
+- Progress line with an estimated time remaining for all long operations; `--no-progress` turns it off.

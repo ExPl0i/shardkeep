@@ -8,14 +8,13 @@ import os
 import random
 import shutil
 import subprocess
-import sys
-import time
 import zipfile
 from collections import defaultdict
 
 from shardkeep import codecs
 from shardkeep.analyze.rules import file_ext
 from shardkeep.fsutil import long_path
+from shardkeep.progress import Progress
 from shardkeep.textfmt import human, num, ts_local
 
 ROOT_FILES_KEY = "<files in the root>"
@@ -80,7 +79,7 @@ class Scanner:
         self.skipped_links = 0
         self.total_files = 0
         self.total_bytes = 0
-        self._last_print = 0.0
+        self._bar = None
         self.rng = random.Random(12345)
 
     def _err(self, path, exc):
@@ -91,21 +90,19 @@ class Scanner:
     def _excluded(self, rel, name):
         return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(name, p) for p in self.excludes)
 
-    def _progress(self, rel_dir, force=False):
-        now = time.monotonic()
-        if force or now - self._last_print > 2.0:
-            self._last_print = now
-            shown = rel_dir if len(rel_dir) < 70 else "..." + rel_dir[-67:]
-            sys.stdout.write(f"\r  files: {self.total_files:>10,}  size: {human(self.total_bytes):>10}  {shown:<72}")
-            sys.stdout.flush()
-
     def scan(self):
+        # Общий объем заранее неизвестен: строка прогресса показывает счетчик, скорость и прошедшее время.
+        with Progress("scanning", unit="files") as bar:
+            self._bar = bar
+            self._scan()
+        self._bar = None
+
+    def _scan(self):
         # элемент стека: (путь ОС, части пути, состояние правил, внутри .git, репозиторий)
         stack = [(self.root_os, (), self.rules.ROOT_STATE, False, None)]
         while stack:
             path, parts, state, in_git, repo = stack.pop()
             rel_dir = "/".join(parts)
-            self._progress(rel_dir)
             try:
                 with os.scandir(path) as it:
                     entries = list(it)
@@ -145,8 +142,8 @@ class Scanner:
                     self._err(rel, exc)
                     continue
                 self._add_file(e.name, rel, parts, st.st_size, st.st_mtime, state, repo)
-        self._progress("", force=True)
-        sys.stdout.write("\n")
+                self._bar.postfix = human(self.total_bytes)
+                self._bar.update()
 
     def _add_file(self, name, rel, parts, size, mtime, state, repo):
         lname = name.lower()
@@ -224,8 +221,7 @@ def find_duplicates(scanner, mode):
     total = sum(s * len(p) for s, p in cands)
     print(f"Looking for duplicates: {num(sum(len(p) for _, p in cands))} candidate files, {human(total)}")
     groups = []
-    done = 0
-    t0 = time.monotonic()
+    bar = Progress("duplicates", total=total)
     for size, paths in sorted(cands, key=lambda x: -x[0]):
         by_partial = defaultdict(list)
         for rel in paths:
@@ -248,12 +244,8 @@ def find_duplicates(scanner, mode):
             for fh, eq in by_full.items():
                 if len(eq) > 1:
                     groups.append({"size": size, "hash": fh, "paths": sorted(eq), "verified": True})
-        done += size * len(paths)
-        if time.monotonic() - t0 > 2:
-            t0 = time.monotonic()
-            sys.stdout.write(f"\r  checked {human(done)} of {human(total)}   ")
-            sys.stdout.flush()
-    sys.stdout.write("\n")
+        bar.update(size * len(paths))
+    bar.close()
     groups.sort(key=lambda g: -g["size"] * (len(g["paths"]) - 1))
     return groups
 
@@ -276,7 +268,9 @@ def run_git(repo_path, *args, timeout=120):
 def inspect_repos(scanner):
     have_git = shutil.which("git") is not None
     result = []
+    bar = Progress("git repositories", total=len(scanner.repos), unit="repos")
     for rel, info in sorted(scanner.repos.items()):
+        bar.update()
         repo_path = scanner.root if rel == "." else os.path.join(scanner.root, *rel.split("/"))
         rec = dict(info)
         rec.update({"remotes": {}, "branch": "", "modified": None, "untracked": None, "unpushed": None,
@@ -323,6 +317,7 @@ def inspect_repos(scanner):
                         pass
             rec["tracked_bytes"] = tracked
         result.append(rec)
+    bar.close()
     return result
 
 
@@ -369,8 +364,7 @@ def estimate_compression(scanner, budget_bytes):
     per_cat_raw = defaultdict(int)
     per_cat_comp = defaultdict(int)
     npz = {"checked": 0, "stored_bytes": 0, "deflated_bytes": 0}
-    t0 = time.monotonic()
-    done = 0
+    bar = Progress("compression estimate", total=len(groups), unit="groups")
     for (unit, cat), items in sorted(groups.items()):
         buf = bytearray()
         for rel, size in items:
@@ -389,17 +383,14 @@ def estimate_compression(scanner, budget_bytes):
                 npz["stored_bytes"] += s
                 npz["deflated_bytes"] += d
         if not buf:
+            bar.update()
             continue
         comp = compress_len(bytes(buf))
         per_group[(unit, cat)] = (len(buf), comp)
         per_cat_raw[cat] += len(buf)
         per_cat_comp[cat] += comp
-        done += 1
-        if time.monotonic() - t0 > 2:
-            t0 = time.monotonic()
-            sys.stdout.write(f"\r  groups done: {done}/{len(groups)}   ")
-            sys.stdout.flush()
-    sys.stdout.write("\n")
+        bar.update()
+    bar.close()
     per_cat = {c: per_cat_comp[c] / per_cat_raw[c] for c in per_cat_raw if per_cat_raw[c]}
     per_group_ratio = {k: c / r for k, (r, c) in per_group.items() if r}
     return per_group_ratio, per_cat, npz

@@ -305,6 +305,8 @@ def build_parser():
         description="Pack large data folders into compressed shards, verify, upload and restore them.",
     )
     ap.add_argument("--version", action="version", version=f"shardkeep {__version__}")
+    ap.add_argument("--no-progress", action="store_true",
+                    help="do not show progress lines (also: environment variable SHARDKEEP_NO_PROGRESS=1)")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
     for name, help_text in COMMANDS.items():
         if name in ADDERS:
@@ -322,6 +324,9 @@ def _not_ready(a):
 def main(argv=None):
     setup_console()
     a = build_parser().parse_args(argv)
+    if a.no_progress:
+        from shardkeep import progress
+        progress.ENABLED = False
     try:
         code = a.func(a)
     except UserError as exc:

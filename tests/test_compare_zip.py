@@ -3,7 +3,7 @@ import zipfile
 
 import pytest
 
-from conftest import make_tree, write_file
+from conftest import make_tree
 from shardkeep.cli import main
 from shardkeep.compare_zip import compare_zip
 from shardkeep.errors import UserError

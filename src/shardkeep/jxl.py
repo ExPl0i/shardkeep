@@ -17,7 +17,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from shardkeep.errors import UserError
 from shardkeep.fsutil import os_path
@@ -116,18 +116,22 @@ def _convert_one(tools, src_os, rel, tmpdir, k):
 class Batch:
     """Перевод JPEG одной части во временную папку (параллельно) с последующей уборкой."""
 
-    def __init__(self, tools, src_os, rels, workdir, workers=None):
+    def __init__(self, tools, src_os, rels, workdir, workers=None, on_file=None):
+        """on_file(размер) вызывается для каждого переведенного файла (для строки прогресса)."""
         self.tmpdir = tempfile.mkdtemp(prefix="sk_jxl_", dir=workdir)
         self.done = {}
         self.fallback = {}
         workers = workers or min(32, os.cpu_count() or 1)
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {rel: pool.submit(_convert_one, tools, src_os, rel, self.tmpdir, k)
+            futures = {pool.submit(_convert_one, tools, src_os, rel, self.tmpdir, k): rel
                        for k, rel in enumerate(rels)}
-            for rel, fut in futures.items():
+            for fut in as_completed(futures):
+                rel = futures[fut]
                 conv, reason = fut.result()
                 if conv is not None:
                     self.done[rel] = conv
+                    if on_file is not None:
+                        on_file(conv.orig_size)  # переведенный JPEG дальше в прогрессе не считается
                 else:
                     self.fallback[rel] = reason
 

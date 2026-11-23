@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from shardkeep import layout
 from shardkeep.errors import UserError
 from shardkeep.fsutil import read_json
+from shardkeep.progress import CallbackReader, Progress, fmt_duration
 from shardkeep.textfmt import human, num
 
 # Служебные файлы, которые не загружаются.
@@ -94,18 +95,21 @@ def _known_shard_hashes(out):
     return known
 
 
-def sha256_file(path, block=8 << 20):
+def sha256_file(path, block=8 << 20, on_read=None):
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open(path, "rb") as raw:
+        f = CallbackReader(raw, on_read) if on_read else raw
         for b in iter(lambda: f.read(block), b""):
             h.update(b)
     return h.hexdigest()
 
 
-def git_blob_sha1(path):
+def git_blob_sha1(path, on_read=None):
     """Идентификатор файла в git (так Hugging Face хранит небольшие файлы вне LFS)."""
     with open(path, "rb") as f:
         data = f.read()
+    if on_read:
+        on_read(len(data))
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
@@ -113,6 +117,21 @@ def compare(target, local, remote, compute_hashes=True):
     """Сверяет локальные файлы со списком файлов хранилища."""
     res = RemoteCheck(target, len(local), len(remote))
     local_set = set()
+    to_hash = sum(f.size for f in local if f.rel in remote and remote[f.rel].size == f.size
+                  and ((remote[f.rel].sha256 and not f.sha256) or (not remote[f.rel].sha256 and remote[f.rel].git_sha1))
+                  ) if compute_hashes else 0
+    bar = Progress("hashing local files", total=to_hash) if to_hash else None
+    on_read = bar.update if bar else None
+    try:
+        _compare(res, local, remote, local_set, compute_hashes, on_read)
+    finally:
+        if bar:
+            bar.close()
+    res.extra = sorted(p for p in remote if p not in local_set and not ignored(p))
+    return res
+
+
+def _compare(res, local, remote, local_set, compute_hashes, on_read):
     for f in local:
         local_set.add(f.rel)
         r = remote.get(f.rel)
@@ -123,7 +142,7 @@ def compare(target, local, remote, compute_hashes=True):
             res.size_mismatch.append(f.rel)
             continue
         if r.sha256:
-            sha = f.sha256 or (sha256_file(f.path) if compute_hashes else None)
+            sha = f.sha256 or (sha256_file(f.path, on_read=on_read) if compute_hashes else None)
             if sha is None:
                 res.size_only.append(f.rel)
             elif sha != r.sha256:
@@ -131,14 +150,12 @@ def compare(target, local, remote, compute_hashes=True):
             else:
                 res.hash_checked += 1
         elif r.git_sha1 and compute_hashes:
-            if git_blob_sha1(f.path) != r.git_sha1:
+            if git_blob_sha1(f.path, on_read) != r.git_sha1:
                 res.hash_mismatch.append(f.rel)
             else:
                 res.hash_checked += 1
         else:
             res.size_only.append(f.rel)
-    res.extra = sorted(p for p in remote if p not in local_set and not ignored(p))
-    return res
 
 
 def print_check(res):
@@ -199,6 +216,25 @@ def batches(files, max_files=50, max_bytes=20 * 2**30):
         size += f.size
     if batch:
         yield batch
+
+
+class BatchClock:
+    """Оценка оставшегося времени загрузки по уже загруженным порциям (сами порции показывает huggingface_hub)."""
+
+    def __init__(self, total_bytes, clock=None):
+        import time
+        self.clock = clock or time.monotonic
+        self.total = total_bytes
+        self.done = 0
+        self.start = self.clock()
+
+    def add(self, n):
+        self.done += n
+        elapsed = self.clock() - self.start
+        left = self.total - self.done
+        eta = left * elapsed / self.done if self.done and left > 0 else 0
+        return (f"{human(self.done)} of {human(self.total)} uploaded, elapsed {fmt_duration(elapsed)}, "
+                f"ETA {fmt_duration(eta)}")
 
 
 def describe(files):

@@ -6,7 +6,7 @@
 """
 
 from shardkeep.errors import UserError
-from shardkeep.remote import RemoteFile, batches, compare, describe, local_files
+from shardkeep.remote import BatchClock, RemoteFile, batches, compare, describe, local_files
 
 REPO_TYPE = "dataset"
 
@@ -80,10 +80,12 @@ def upload(out, repo, private=True, api=None):
         return 0
     print(f"Uploading to {repo}: {describe(pending)}")
     parts = list(batches(pending))
+    clock = BatchClock(sum(f.size for f in pending))
     for k, batch in enumerate(parts, 1):
         print(f"  part {k}/{len(parts)}: {describe(batch)}")
         api.upload_folder(repo_id=repo, repo_type=REPO_TYPE, folder_path=out,
                           allow_patterns=[f.rel for f in batch],
                           commit_message=f"shardkeep upload {k}/{len(parts)}")
+        print(f"  part {k}/{len(parts)} done: " + clock.add(sum(f.size for f in batch)))
     print(f"Done: https://huggingface.co/datasets/{repo}")
     return len(pending)

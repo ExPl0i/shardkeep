@@ -14,7 +14,6 @@ from shardkeep import remote
 from shardkeep.cli import main
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path
-from shardkeep.pack import pack
 from shardkeep.remote import hf, rclone
 
 SMALL = 64 / 2**20

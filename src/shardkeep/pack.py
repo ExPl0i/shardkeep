@@ -5,15 +5,15 @@ import hashlib
 import json
 import os
 import tarfile
-import time
 
 from shardkeep import __version__, jxl, layout
 from shardkeep.codecs import DEFAULT_LEVEL, WINDOW_LOG, CountingWriter, HashingReader, open_writer, pick_codec
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path, read_json, walk_files, write_json
 from shardkeep.plan import by_shard, load_plan, make_plan, save_plan
+from shardkeep.progress import Progress, echo
 from shardkeep.profiles import DEFAULT_PROFILE, LOW, PROFILES, choose_threads, classify_extensions, describe_classes
-from shardkeep.textfmt import fmt_time, human, num, pct
+from shardkeep.textfmt import human, num, pct
 
 FORMAT_VERSION = 2
 DEFAULT_SHARD_GB = 4.0
@@ -77,7 +77,8 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         if use_jxl:
             jxl.require_tools()
         print(f"Scanning {src} ...")
-        files = walk_files(src, excludes, include_env)
+        with Progress("scanning", unit="files") as bar:
+            files = walk_files(src, excludes, include_env, on_file=lambda size: bar.update())
         classes = None
         if prof.classify and level_low is not None:
             classes, stats = classify_extensions(long_path(src), files, prof.classify)
@@ -112,7 +113,7 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
             n, note = choose_threads(codec, lvl, lng, threads)
             thread_cache[(lvl, lng)] = n
             if note:
-                print(note)
+                echo(note)
         return {"codec": codec, "level": lvl, "long": lng, "threads": thread_cache[(lvl, lng)],
                 "jxl_tools": jxl_tools, "workdir": layout.data_dir(out, name)}
 
@@ -121,30 +122,26 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
           f"{codec} {levels_txt}" + (", long-distance matching" if long_mode and codec == "zstd" else ""))
 
     src_os = long_path(src)
-    t_start = time.monotonic()
-    done_bytes = processed_bytes = 0
-    for i, entries in enumerate(groups):
-        sf = layout.shard_file(out, name, i, codec)
-        mf = layout.manifest_file(out, name, i)
-        raw = sum(e["n"] for e in entries)
-        if os.path.exists(sf) and os.path.exists(mf):
-            done_bytes += raw
-            continue
-        t0 = time.monotonic()
-        params = shard_params(entries)
-        info = write_shard(src_os, entries, sf, mf, layout.shard_meta_file(out, name, i), params)
-        done_bytes += raw
-        processed_bytes += raw
-        dt_s = time.monotonic() - t0
-        speed = raw / dt_s if dt_s > 0 else 0
-        overall = processed_bytes / max(time.monotonic() - t_start, 1e-9)
-        eta = (total - done_bytes) / overall if overall > 0 else 0
-        comp = info["compressed_bytes"]
-        skipped = len(info["skipped"])
-        print(f"  shard {i + 1}/{len(groups)}: {human(raw)} -> {human(comp)} "
-              f"({pct(comp, raw)}), level {params['level']}, {params['threads']} threads, {human(speed)}/s, "
-              f"about {fmt_time(eta)} left"
-              + (f", unreadable files: {skipped}" if skipped else ""))
+    done = [os.path.exists(layout.shard_file(out, name, i, codec)) and os.path.exists(layout.manifest_file(out, name, i))
+            for i in range(len(groups))]
+    done_bytes = sum(e["n"] for i, entries in enumerate(groups) if done[i] for e in entries)
+    with Progress(f"pack {name}", total=total, initial=done_bytes) as bar:
+        for i, entries in enumerate(groups):
+            raw = sum(e["n"] for e in entries)
+            if done[i]:
+                continue
+            sf = layout.shard_file(out, name, i, codec)
+            mf = layout.manifest_file(out, name, i)
+            bar.set_postfix(f"shard {i + 1}/{len(groups)}")
+            params = shard_params(entries)
+            started = bar.n
+            info = write_shard(src_os, entries, sf, mf, layout.shard_meta_file(out, name, i), params, bar)
+            bar.set(started + raw)  # точное значение, даже если файлы изменились после составления плана
+            comp = info["compressed_bytes"]
+            skipped = len(info["skipped"])
+            echo(f"  shard {i + 1}/{len(groups)}: {human(raw)} -> {human(comp)} ({pct(comp, raw)}), "
+                 f"level {params['level']}, {params['threads']} threads"
+                 + (f", unreadable files: {skipped}" if skipped else ""))
 
     return write_summary(out, name)
 
@@ -177,22 +174,30 @@ def _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes, in
             saved_long if long_mode is None else bool(long_mode))
 
 
-def write_shard(src_os, entries, sf, mf, meta_f, params):
+def write_shard(src_os, entries, sf, mf, meta_f, params, bar=None):
     """Пишет одну часть. Файл, чтение которого оборвалось на середине, исключается, и часть пишется заново."""
     skip = {}
+    started = bar.n if bar else 0
     while True:
         try:
-            return _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip)
+            return _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip, bar)
         except _ReadFailed as rf:
-            print(f"  reading {rf.path} failed midway ({rf.exc}); rewriting the shard without this file")
+            echo(f"  reading {rf.path} failed midway ({rf.exc}); rewriting the shard without this file")
             skip[rf.path] = str(rf.exc)
+            if bar:
+                bar.set(started)
 
 
-def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
+def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip, bar=None):
     tmp_sf, tmp_mf = sf + ".partial", mf + ".partial"
     file_hash = hashlib.sha256()
+    on_read = bar.update if bar else None
     writer = open_writer(tmp_sf, params["codec"], params["level"], params["threads"], params["long"],
                          hasher=file_hash)
+    if bar is not None and writer.consumed() is not None:
+        # zstandard: прогресс по сжатым байтам, которые компрессор сообщает фоновому потоку строки прогресса
+        on_read = None
+        bar.track(writer.consumed, base=bar.n, limit=bar.n + sum(e["n"] for e in entries))
     cw = CountingWriter(writer)
     records = []
     skipped = [{"path": p, "error": err} for p, err in skip.items()]
@@ -202,7 +207,9 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
         if params.get("jxl_tools"):
             batch = jxl.Batch(params["jxl_tools"], src_os,
                               [e["p"] for e in entries if jxl.is_jpeg(e["p"]) and e["p"] not in skip],
-                              params["workdir"])
+                              params["workdir"], on_file=bar.update if bar else None)
+            if bar is not None and on_read is None:
+                bar.track(writer.consumed, base=bar.n, limit=bar._source[2] if bar._source else None)
         tar = tarfile.open(fileobj=cw, mode="w|", format=tarfile.PAX_FORMAT)
         for e in entries:
             if e["p"] in skip:
@@ -225,7 +232,7 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
             try:
                 f = open(p, "rb")
             except OSError as exc:
-                print(f"  cannot read {e['p']}: {exc}")
+                echo(f"  cannot read {e['p']}: {exc}")
                 skipped.append({"path": e["p"], "error": str(exc)})
                 continue
             with f:
@@ -234,7 +241,7 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
                 ti.size = st.st_size
                 ti.mtime = int(st.st_mtime)
                 ti.mode = 0o644
-                hr = HashingReader(f, hashlib.sha256())
+                hr = HashingReader(f, hashlib.sha256(), on_read)
                 try:
                     tar.addfile(ti, hr)
                 except OSError as exc:
@@ -246,7 +253,10 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
         cw.abort()
         raise
     finally:
+        # Последнее задание zstd сжимается внутри close(): прогресс отслеживается до конца
         writer.close()
+        if bar is not None:
+            bar.track(None)
         if batch:
             batch.close()
     comp = os.path.getsize(tmp_sf)

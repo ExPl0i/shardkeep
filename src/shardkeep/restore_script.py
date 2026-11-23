@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 try:
     from compression import zstd as _stdzstd  # Python 3.14+
@@ -66,13 +67,64 @@ def os_path(root, rel):
     return os.path.join(root, *rel.split("/"))
 
 
+class Progress:
+    """Progress line with an estimate of the remaining time (only in a terminal)."""
+
+    def __init__(self, label, total):
+        self.label, self.total, self.n = label, total, 0
+        self.start = self.last = time.monotonic()
+        self.width = 0
+        self.tty = sys.stdout.isatty() and os.environ.get("SHARDKEEP_NO_PROGRESS", "") in ("", "0")
+
+    def update(self, n):
+        self.n += n
+        now = time.monotonic()
+        if self.tty and now - self.last >= 0.2:
+            self.last = now
+            self.draw(now)
+
+    def draw(self, now):
+        elapsed = now - self.start
+        rate = self.n / elapsed if elapsed > 0 else 0
+        frac = min(self.n / self.total, 1.0) if self.total else 1.0
+        eta = (self.total - self.n) / rate if rate > 0 else None
+        fmt = lambda s: "%d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)  # noqa: E731
+        line = "  %s [%s%s] %5.1f%%  %.1f MB/s  ETA %s  elapsed %s" % (
+            self.label, "#" * int(frac * 20), "." * (20 - int(frac * 20)), 100 * frac, rate / 2**20,
+            fmt(eta) if eta is not None else "--:--:--", fmt(elapsed))
+        line = line[: max(shutil.get_terminal_size((100, 20)).columns - 1, 20)]
+        sys.stdout.write("\r" + line + " " * max(self.width - len(line), 0))
+        sys.stdout.flush()
+        self.width = len(line)
+
+    def clear(self):
+        if self.tty and self.width:
+            sys.stdout.write("\r" + " " * self.width + "\r")
+            sys.stdout.flush()
+            self.width = 0
+
+
+BAR = None
+
+
+def say(msg=""):
+    """print() that does not break the progress line."""
+    if BAR is not None:
+        BAR.clear()
+    print(msg, flush=True)
+    if BAR is not None and BAR.tty:
+        BAR.draw(time.monotonic())
+
+
 class HashingFile:
-    def __init__(self, f, h):
-        self.f, self.h = f, h
+    def __init__(self, f, h, on_read=None):
+        self.f, self.h, self.on_read = f, h, on_read
 
     def read(self, n=-1):
         b = self.f.read(n)
         self.h.update(b)
+        if self.on_read is not None and b:
+            self.on_read(len(b))
         return b
 
     def readinto(self, buf):
@@ -94,8 +146,8 @@ class HashingFile:
         return self.f.closed
 
 
-def open_reader(path, h=None):
-    raw = HashingFile(open(path, "rb"), h or hashlib.sha256())
+def open_reader(path, h=None, on_read=None):
+    raw = HashingFile(open(path, "rb"), h or hashlib.sha256(), on_read)
     if path.endswith(".zst"):
         if _zstd is not None:
             return _zstd.ZstdDecompressor(max_window_size=2**31).stream_reader(raw, read_across_frames=True,
@@ -189,14 +241,14 @@ def shards_of(out, name):
     return shards, problems
 
 
-def check_shard(path, mf, meta, djxl=None):
+def check_shard(path, mf, meta, djxl=None, on_read=None):
     expected = read_manifest(mf)
     jmap = jxl_map(meta)
     seen, bad = set(), []
     h_file = hashlib.sha256()
     raw = None
     try:
-        rd, raw = open_reader(path, h_file)
+        rd, raw = open_reader(path, h_file, on_read)
         with rd:
             with tarfile.open(fileobj=rd, mode="r|") as tar:
                 for m in tar:
@@ -277,6 +329,20 @@ def walk(src, excludes, include_env):
     return out
 
 
+def _start_bar(label, out, names):
+    global BAR
+    total = sum(os.path.getsize(p) for name in names for _, p, _ in shards_of(out, name)[0])
+    BAR = Progress(label, total)
+    return BAR
+
+
+def _stop_bar():
+    global BAR
+    if BAR is not None:
+        BAR.clear()
+    BAR = None
+
+
 def cmd_verify(a):
     problems, warnings = [], []
     names = set_names(a.out, a.name)
@@ -284,34 +350,35 @@ def cmd_verify(a):
         sys.exit("With --src, choose the set with --name")
     total = 0
     djxl = shutil.which("djxl")
+    bar = _start_bar("verify", a.out, names)
     for name in names:
         man = os.path.join(a.out, "manifest", name)
         settings_path = os.path.join(man, "pack_settings.json")
         settings = read_json(settings_path) if os.path.exists(settings_path) else {}
         shards, layout_problems = shards_of(a.out, name)
-        print(f"Verifying set {name}: {len(shards)} shards")
+        say(f"Verifying set {name}: {len(shards)} shards")
         for p in layout_problems:
-            print("  " + p)
+            say("  " + p)
         problems += layout_problems
         known = set()
         for i, path, mf in shards:
             meta = read_meta(mf)
             if meta and meta.get("jxl") and not djxl and "djxl" not in " ".join(warnings):
                 warnings.append("JPEG XL files were checked by the hash of the .jxl data only (djxl is not installed)")
-                print("  Warning: " + warnings[-1])
-            bad, n, expected = check_shard(path, mf, meta, djxl)
+                say("  Warning: " + warnings[-1])
+            bad, n, expected = check_shard(path, mf, meta, djxl, bar.update)
             skipped = (meta or {}).get("skipped", [])
             total += n
             known.update(expected)
             known.update(s["path"] for s in skipped)
-            print(f"  {os.path.basename(path)}: {'OK' if not bad else 'ERROR'}, {n} files")
+            say(f"  {os.path.basename(path)}: {'OK' if not bad else 'ERROR'}, {n} files")
             for b in bad[:10]:
-                print("    " + b)
+                say("    " + b)
             if bad:
                 problems.append(f"{path}: " + "; ".join(bad[:20]))
             if skipped:
                 msg = f"{os.path.basename(path)}: {len(skipped)} files could not be read during packing"
-                print("    " + msg)
+                say("    " + msg)
                 (warnings if a.allow_skipped else problems).append(msg)
             if a.src:
                 changed = 0
@@ -323,7 +390,7 @@ def cmd_verify(a):
                         changed += 1
                 if changed:
                     msg = f"{os.path.basename(path)}: {changed} source files changed or disappeared after packing"
-                    print("    " + msg)
+                    say("    " + msg)
                     problems.append(msg)
         if a.src and not layout_problems:
             new = [p for p in walk(a.src, settings.get("excludes", []), settings.get("include_env", False))
@@ -331,7 +398,7 @@ def cmd_verify(a):
             if new:
                 msg = f"set {name}: {len(new)} files in the source folder are not in the archives: " + ", ".join(
                     sorted(new)[:5])
-                print("  " + msg)
+                say("  " + msg)
                 problems.append(msg)
     report = [f"{dt.datetime.now():%d.%m.%Y %H:%M} {'OK' if not problems else 'ERRORS'}"] + problems
     if warnings:
@@ -341,11 +408,12 @@ def cmd_verify(a):
             f.write("\n".join(report) + "\n")
     except OSError:
         pass
+    _stop_bar()
     print(f"Files verified: {total}")
     if problems:
-        print("\nErrors found (see verify_report.txt). Do not delete the source data.")
+        say("\nErrors found (see verify_report.txt). Do not delete the source data.")
         sys.exit(1)
-    print("\nAll archives are intact and match their manifests.")
+    say("\nAll archives are intact and match their manifests.")
 
 
 def safe_name(name):
@@ -359,8 +427,9 @@ def cmd_unpack(a):
         target = long_path(dest if a.flat else os.path.join(dest, name))
         os.makedirs(target, exist_ok=True)
         shards, _ = shards_of(a.out, name)
-        print(f"Extracting {name}: {len(shards)} shards")
+        say(f"Extracting {name}: {len(shards)} shards")
         for _, path, mf in shards:
+            bar = BAR or _start_bar("unpack", a.out, set_names(a.out, a.name))
             n = 0
             meta = read_meta(mf)
             jmap = {} if a.keep_jxl else jxl_map(meta)
@@ -369,7 +438,7 @@ def cmd_unpack(a):
             if jmap and not djxl:
                 sys.exit("This set contains JPEG files converted to JPEG XL. Install djxl from libjxl "
                          "(https://github.com/libjxl/libjxl/releases) to restore them, or use --keep-jxl.")
-            rd, raw = open_reader(path)
+            rd, raw = open_reader(path, on_read=bar.update)
             try:
                 with rd:
                     with tarfile.open(fileobj=rd, mode="r|") as tar:
@@ -400,8 +469,9 @@ def cmd_unpack(a):
                             n += 1
             finally:
                 raw.close()
-            print(f"  {os.path.basename(path)}: {n} files extracted")
-    print("Done.")
+            say(f"  {os.path.basename(path)}: {n} files extracted")
+    _stop_bar()
+    say("Done.")
 
 
 def main():

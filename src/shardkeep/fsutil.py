@@ -26,11 +26,14 @@ def is_excluded(rel, name, patterns):
     return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(name, p) for p in patterns)
 
 
-def walk_files(src, excludes=(), include_env=False, on_error=print):
+def walk_files(src, excludes=(), include_env=False, on_error=None, on_file=None):
     """Список (относительный путь, размер, время изменения) всех файлов папки.
 
     Символические ссылки пропускаются. Относительные пути используют разделитель «/».
+    on_file(размер) вызывается для каждого найденного файла (для строки прогресса).
     """
+    if on_error is None:
+        from shardkeep.progress import echo as on_error
     root = long_path(src)
     out = []
     stack = [(root, ())]
@@ -56,6 +59,8 @@ def walk_files(src, excludes=(), include_env=False, on_error=print):
                 elif e.is_file(follow_symlinks=False):
                     st = e.stat(follow_symlinks=False)
                     out.append((rel, st.st_size, int(st.st_mtime)))
+                    if on_file is not None:
+                        on_file(st.st_size)
             except OSError as exc:
                 on_error(f"  skipped {rel}: {exc}")
     return out

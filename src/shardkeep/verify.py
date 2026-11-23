@@ -13,6 +13,7 @@ from shardkeep.codecs import drain, open_reader
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path, read_json, walk_files, write_text
 from shardkeep.plan import load_plan
+from shardkeep.progress import Progress, echo
 from shardkeep.textfmt import num
 
 
@@ -59,7 +60,7 @@ def _check_jxl_member(fo, name, orig, info, expected, djxl, workdir, bad):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def check_shard(shard, info=None, djxl=None):
+def check_shard(shard, info=None, djxl=None, on_read=None):
     """Читает часть целиком и сверяет каждый файл с манифестом.
 
     info – параметры части (формат 2): дополнительно сверяются размер и SHA-256 самого файла части.
@@ -72,7 +73,7 @@ def check_shard(shard, info=None, djxl=None):
     bad = []
     file_hash = hashlib.sha256()
     try:
-        with open_reader(shard.path, hasher=file_hash) as rd:
+        with open_reader(shard.path, hasher=file_hash, on_read=on_read) as rd:
             with tarfile.open(fileobj=rd, mode="r|") as tar:
                 for m in tar:
                     if not m.isfile():
@@ -151,83 +152,95 @@ def _sets_for_src(out, names, src):
 def verify(out, name=None, src=None, report=True, allow_skipped=False):
     res = VerifyResult()
     djxl = jxl.find_tools()[1]
-    jxl_warned = False
     names = layout.list_names(out, name)
     src_sets = _sets_for_src(out, names, src) if src else set()
-    for nm in names:
-        settings = _load_settings(out, nm)
-        state = layout.scan_set(out, nm, _planned(out, nm))
-        print(f"Verifying set {nm}: {len(state.shards)}"
-              + (f" of {state.planned}" if state.planned is not None else "") + " shards")
-        _check_completeness(res, state)
-        n_files = 0
-        archived = set()
-        skipped_paths = set()
-        for shard in state.shards:
-            info = layout.read_shard_meta(out, nm, shard.index)
-            if info and info.get("jxl") and djxl is None and not jxl_warned:
-                jxl_warned = True
-                msg = ("JPEG XL files were checked by the hash of the .jxl data only: djxl is not installed, so the "
-                       "restored JPEG files were not compared with the originals")
-                print("  Warning: " + msg)
-                res.warnings.append(msg)
-            bad, n, expected = check_shard(shard, info, djxl)
-            skipped = (info or {}).get("skipped", [])
-            n_files += n
-            archived.update(expected)
-            skipped_paths.update(x["path"] for x in skipped)
-            print(f"  {shard.filename}: {'OK' if not bad else 'ERROR'}, {num(n)} files"
-                  + (f", unreadable during packing: {len(skipped)}" if skipped else ""))
-            for b in bad[:10]:
-                print(f"    {b}")
-            if bad:
-                res.fail(f"{shard.path}: " + "; ".join(bad[:20]))
-            if skipped:
-                msg = (f"{shard.filename}: {len(skipped)} files could not be read during packing and are not in the archive: "
-                       + ", ".join(s["path"] for s in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
-                print("    " + msg)
-                if allow_skipped:
-                    res.warnings.append(msg)
-                else:
-                    res.fail(msg)
-            if nm in src_sets:
-                changed = check_source(src, expected)
-                if changed:
-                    msg = f"{shard.filename}: {changed} source files changed or disappeared after packing"
-                    print("    " + msg)
-                    res.fail(msg)
-        if nm in src_sets:
-            _check_new_files(res, src, settings, archived | skipped_paths, state)
-        res.files += n_files
-        res.shards += len(state.shards)
-        print(f"  files verified: {num(n_files)}")
+    states = {nm: layout.scan_set(out, nm, _planned(out, nm)) for nm in names}
+    total = sum(os.path.getsize(sh.path) for st in states.values() for sh in st.shards)
+    with Progress("verify", total=total) as bar:
+        for nm in names:
+            _verify_set(res, out, nm, states[nm], src if nm in src_sets else None, allow_skipped, djxl, bar)
+    _report(res, out, report)
+    return res
 
+
+def _verify_set(res, out, nm, state, src, allow_skipped, djxl, bar):
+    jxl_warned = False
+    settings = _load_settings(out, nm)
+    echo(f"Verifying set {nm}: {len(state.shards)}"
+         + (f" of {state.planned}" if state.planned is not None else "") + " shards")
+    _check_completeness(res, state)
+    n_files = 0
+    archived = set()
+    skipped_paths = set()
+    for shard in state.shards:
+        bar.set_postfix(shard.filename)
+        done_before = bar.n
+        info = layout.read_shard_meta(out, nm, shard.index)
+        if info and info.get("jxl") and djxl is None and not jxl_warned:
+            jxl_warned = True
+            msg = ("JPEG XL files were checked by the hash of the .jxl data only: djxl is not installed, so the "
+                   "restored JPEG files were not compared with the originals")
+            echo("  Warning: " + msg)
+            res.warnings.append(msg)
+        bad, n, expected = check_shard(shard, info, djxl, on_read=bar.update)
+        bar.set(done_before + os.path.getsize(shard.path))
+        skipped = (info or {}).get("skipped", [])
+        n_files += n
+        archived.update(expected)
+        skipped_paths.update(x["path"] for x in skipped)
+        echo(f"  {shard.filename}: {'OK' if not bad else 'ERROR'}, {num(n)} files"
+              + (f", unreadable during packing: {len(skipped)}" if skipped else ""))
+        for b in bad[:10]:
+            echo(f"    {b}")
+        if bad:
+            res.fail(f"{shard.path}: " + "; ".join(bad[:20]))
+        if skipped:
+            msg = (f"{shard.filename}: {len(skipped)} files could not be read during packing and are not in the archive: "
+                   + ", ".join(s["path"] for s in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
+            echo("    " + msg)
+            if allow_skipped:
+                res.warnings.append(msg)
+            else:
+                res.fail(msg)
+        if src:
+            changed = check_source(src, expected)
+            if changed:
+                msg = f"{shard.filename}: {changed} source files changed or disappeared after packing"
+                echo("    " + msg)
+                res.fail(msg)
+    if src:
+        _check_new_files(res, src, settings, archived | skipped_paths, state)
+    res.files += n_files
+    res.shards += len(state.shards)
+    echo(f"  files verified: {num(n_files)}")
+
+
+def _report(res, out, report):
     if report:
         lines = [f"{dt.datetime.now():%d.%m.%Y %H:%M} {'OK' if res.ok else 'ERRORS'}"] + res.problems
         if res.warnings:
             lines += ["", "Warnings:"] + res.warnings
         write_text(os.path.join(out, "verify_report.txt"), "\n".join(lines) + "\n")
     if res.ok:
-        print("\nAll archives are intact and match their manifests. The source data can be deleted "
+        echo("\nAll archives are intact and match their manifests. The source data can be deleted "
               "once the archives are uploaded to storage.")
     else:
-        print("\nErrors found (see verify_report.txt). Do not delete the source data.")
-    return res
+        echo("\nErrors found (see verify_report.txt). Do not delete the source data.")
 
 
 def _check_completeness(res, state):
     if state.missing_indexes:
         msg = (f"set {state.name}: packing is not finished, {len(state.shards)} of {state.planned} shards done; "
                "run pack again with the same arguments")
-        print("  " + msg)
+        echo("  " + msg)
         res.fail(msg)
     for fn in state.no_data:
         msg = f"set {state.name}: manifest {fn} exists but the shard file is missing"
-        print("  " + msg)
+        echo("  " + msg)
         res.fail(msg)
     for fn in state.no_manifest:
         msg = f"set {state.name}: shard {fn} is incomplete (no manifest)"
-        print("  " + msg)
+        echo("  " + msg)
         res.fail(msg)
     if state.partial:
         res.warnings.append(f"set {state.name}: temporary files of unfinished packing: " + ", ".join(state.partial))
@@ -237,11 +250,12 @@ def _check_new_files(res, src, settings, known, state):
     """Ищет в исходной папке файлы, которых нет ни в одном манифесте набора."""
     if state.planned is None or state.missing_indexes:
         return  # набор не полный: об этом уже сообщено
-    files = walk_files(src, settings.get("excludes", []), settings.get("include_env", False),
-                       on_error=lambda msg: None)
+    with Progress(f"scanning {src}", unit="files") as bar:
+        files = walk_files(src, settings.get("excludes", []), settings.get("include_env", False),
+                           on_error=lambda msg: None, on_file=lambda size: bar.update())
     new = sorted(rel for rel, _, _ in files if rel not in known)
     if new:
         msg = (f"set {state.name}: {num(len(new))} files in the source folder are not in the archives: "
                + ", ".join(new[:5]) + (" ..." if len(new) > 5 else ""))
-        print("  " + msg)
+        echo("  " + msg)
         res.fail(msg)

@@ -69,7 +69,7 @@ def test_detects_problems(packed):
 
 def test_reads_legacy_archives(tmp_path, legacy):
     src = tmp_path / "src"
-    files = make_tree(src)
+    make_tree(src)
     out = tmp_path / "out"
     legacy_pack(legacy, src, out, name="old")
     copy_restore_script(out)  # заменяет копию исходного скрипта

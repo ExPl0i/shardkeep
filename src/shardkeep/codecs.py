@@ -46,12 +46,13 @@ def codec_of(path):
 
 
 class HashingFile:
-    """Обертка над файлом: считает хеш записанных или прочитанных байтов."""
+    """Обертка над файлом: считает хеш записанных или прочитанных байтов; on_read(n) – для прогресса."""
 
-    def __init__(self, f, h=None):
+    def __init__(self, f, h=None, on_read=None):
         self.f = f
         self.h = h
         self.n = 0
+        self.on_read = on_read
 
     def write(self, b):
         if self.h is not None:
@@ -64,6 +65,8 @@ class HashingFile:
         if self.h is not None:
             self.h.update(b)
         self.n += len(b)
+        if self.on_read is not None and b:
+            self.on_read(len(b))
         return b
 
     def readinto(self, buf):
@@ -100,9 +103,23 @@ class HashingFile:
 class Stream:
     """Сжимающий или распаковывающий поток вместе с файлом под ним."""
 
-    def __init__(self, s, raw):
+    def __init__(self, s, raw, cctx=None):
         self.s = s
         self.raw = raw
+        self.cctx = cctx
+
+    def consumed(self):
+        """Сколько входных байт компрессор уже сжал (только zstandard) или None.
+
+        Многопоточный zstd принимает входные данные на сотни мегабайт вперед, поэтому прочитанный объем
+        не показывает, сколько работы сделано. Вызов безопасен из другого потока: libzstd считает
+        прогресс под блокировками заданий."""
+        if self.cctx is None:
+            return None
+        try:
+            return self.cctx.frame_progression()[1]
+        except Exception:  # noqa: BLE001
+            return None
 
     def write(self, b):
         return self.s.write(b)
@@ -140,8 +157,8 @@ def open_writer(path, codec, level, threads, long_mode, hasher=None):
                 if long_mode:
                     kw.update(enable_ldm=True, window_log=WINDOW_LOG)
                 params = _zstd.ZstdCompressionParameters.from_level(level, **kw)
-                return Stream(_zstd.ZstdCompressor(compression_params=params).stream_writer(raw, closefd=False),
-                              raw)
+                cctx = _zstd.ZstdCompressor(compression_params=params)
+                return Stream(cctx.stream_writer(raw, closefd=False), raw, cctx)
             if _stdzstd is None:
                 raise UserError("zstd needs the zstandard package: pip install zstandard")
             P = _stdzstd.CompressionParameter
@@ -161,12 +178,13 @@ def open_writer(path, codec, level, threads, long_mode, hasher=None):
         raise
 
 
-def open_reader(path, hasher=None):
+def open_reader(path, hasher=None, on_read=None):
     """Открывает сжатый файл для потокового чтения по расширению.
 
-    hasher (необязательно) получает все байты файла; для полного хеша вызовите drain_raw().
+    hasher (необязательно) получает все байты файла; для полного хеша вызовите drain().
+    on_read(n) вызывается для каждого прочитанного куска сжатого файла (для строки прогресса).
     """
-    raw = HashingFile(open(path, "rb"), hasher)
+    raw = HashingFile(open(path, "rb"), hasher, on_read)
     try:
         if path.endswith(".zst"):
             if _zstd is not None:
@@ -195,17 +213,20 @@ def drain(stream):
 
 
 class HashingReader:
-    """Считает хеш файла во время чтения его архиватором."""
+    """Считает хеш файла во время чтения его архиватором; on_read(n) – для строки прогресса."""
 
-    def __init__(self, f, h):
+    def __init__(self, f, h, on_read=None):
         self.f = f
         self.h = h
         self.n = 0
+        self.on_read = on_read
 
     def read(self, n=-1):
         b = self.f.read(n)
         self.h.update(b)
         self.n += len(b)
+        if self.on_read is not None and b:
+            self.on_read(len(b))
         return b
 
 

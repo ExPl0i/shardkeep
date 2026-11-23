@@ -7,8 +7,6 @@
 """
 
 import os
-import sys
-import time
 import zipfile
 import zlib
 from collections import defaultdict
@@ -16,6 +14,7 @@ from dataclasses import dataclass, field
 
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path
+from shardkeep.progress import CallbackReader, Progress, echo
 from shardkeep.textfmt import human, num
 
 
@@ -35,15 +34,35 @@ class ZipCompareResult:
         return not (self.size_mismatch or self.crc_mismatch or self.only_in_folder or self.damaged_member)
 
 
-def crc32_file(path, block=8 << 20):
+def crc32_file(path, block=8 << 20, on_read=None):
     c = 0
-    with open(path, "rb") as f:
+    with open(path, "rb") as raw:
+        f = CallbackReader(raw, on_read) if on_read else raw
         for b in iter(lambda: f.read(block), b""):
             c = zlib.crc32(b, c)
     return c & 0xFFFFFFFF
 
 
+def test_members(z, entries):
+    """Распаковывает каждый файл архива в память и проверяет CRC32, как ZipFile.testzip, но с прогрессом.
+    Возвращает имя первого поврежденного файла или None."""
+    with Progress("zip test", total=sum(zi.file_size for zi in entries)) as bar:
+        for zi in entries:
+            try:
+                with z.open(zi) as f:
+                    for b in iter(lambda: f.read(8 << 20), b""):
+                        bar.update(len(b))
+            except (zipfile.BadZipFile, zlib.error, OSError, EOFError, NotImplementedError):
+                return zi.filename
+    return None
+
+
 def list_folder(folder):
+    with Progress("scanning", unit="files") as bar:
+        return _list_folder(folder, bar)
+
+
+def _list_folder(folder, bar):
     root = long_path(folder)
     out = {}
     stack = [(root, "")]
@@ -52,7 +71,7 @@ def list_folder(folder):
         try:
             entries = list(os.scandir(p))
         except OSError as exc:
-            print(f"  skipped {rel or '.'}: {exc}")
+            echo(f"  skipped {rel or '.'}: {exc}")
             continue
         for e in entries:
             r = f"{rel}/{e.name}" if rel else e.name
@@ -61,8 +80,9 @@ def list_folder(folder):
                     stack.append((e.path, r))
                 elif e.is_file(follow_symlinks=False):
                     out[r] = e.stat(follow_symlinks=False).st_size
+                    bar.update()
             except OSError as exc:
-                print(f"  skipped {r}: {exc}")
+                echo(f"  skipped {r}: {exc}")
     return out
 
 
@@ -115,23 +135,13 @@ def compare_zip(zip_path, folder, crc=False, test=False):
                 same_size.append((pick, zi))
         if crc:
             root = long_path(folder)
-            total = sum(local[p] for p, _ in same_size)
-            done, t0 = 0, time.monotonic()
-            for p, zi in same_size:
-                if crc32_file(os_path(root, p)) != zi.CRC:
-                    res.crc_mismatch.append(p)
-                done += local[p]
-                if time.monotonic() - t0 > 2:
-                    t0 = time.monotonic()
-                    sys.stdout.write(f"\r  CRC32: {human(done)} of {human(total)}   ")
-                    sys.stdout.flush()
-            sys.stdout.write("\n")
+            with Progress("CRC32", total=sum(local[p] for p, _ in same_size)) as bar:
+                for p, zi in same_size:
+                    if crc32_file(os_path(root, p), on_read=bar.update) != zi.CRC:
+                        res.crc_mismatch.append(p)
         if test:
             print("Testing archive integrity ...")
-            try:
-                res.damaged_member = z.testzip()
-            except (zipfile.BadZipFile, zlib.error, OSError, EOFError) as exc:
-                res.damaged_member = f"(archive structure: {exc})"
+            res.damaged_member = test_members(z, entries)
     used = {p for p, _ in pairs}
     res.only_in_folder = sorted(r for r in local if r not in used)
     res.matched = len(same_size) - len(res.crc_mismatch)
