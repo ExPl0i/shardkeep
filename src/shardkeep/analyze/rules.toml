@@ -1,0 +1,198 @@
+# Default file categories and classification rules for `shardkeep analyze`.
+#
+# A file gets the category of the first rule that matches it. All conditions of a rule must hold;
+# a list condition holds when any item of the list matches. Conditions:
+#   ext        file extensions, lower case, with the dot (".json"); "" means no extension
+#   not_ext    the rule does not apply to these extensions
+#   name       glob patterns for the lower-case file name ("*tfevents*", "readme*")
+#   path       glob patterns for the path relative to the analyzed folder ("data/raw/*")
+#   dir        glob patterns for the name of any parent folder (".git", "*checkpoint*")
+#   not_dir    the rule does not apply if any parent folder name matches one of these patterns
+#   min_size / max_size   size limits in bytes, or with a unit: "2KB", "50MB", "1GB"
+#
+# Your own rules file (shardkeep analyze --rules my_rules.toml) uses the same format. Its rules are
+# checked before these ones, and its categories add to or replace the default ones with the same id.
+
+[[category]]
+id = "code"
+title = "Source code and configuration"
+advice = "Source code: keep it in a git repository on GitHub or a similar service (see the git section)."
+
+[[category]]
+id = "git"
+title = "Git internals (.git)"
+advice = "Git internals: they are kept together with the repository on the git server and are not archived separately."
+
+[[category]]
+id = "env"
+title = "Environments, caches and build output"
+advice = "Can be deleted: recreated by installing the dependencies (pip, conda, npm) or by rebuilding."
+
+[[category]]
+id = "checkpoint"
+title = "Model weights (checkpoints)"
+data = true
+advice = "Model weights: keep the final checkpoints and delete intermediate ones. Final weights can be published as a model, if the license of the training data allows it."
+
+[[category]]
+id = "arrays"
+title = "Arrays and binary records (npz, npy, pkl, h5, parquet, tfrecord)"
+data = true
+advice = "Processed data: if a script recreates it from the raw data, keeping the script and its parameters is enough; otherwise pack it into shards and store it in Hugging Face or cloud storage."
+
+[[category]]
+id = "images"
+title = "Images"
+data = true
+advice = "Images: if they are generated automatically, they can be recreated; otherwise pack them. PNG and JPEG are already compressed, an archiver barely reduces them."
+
+[[category]]
+id = "video"
+title = "Video and animations"
+data = true
+advice = "Video is already compressed; keep only the clips you need."
+
+[[category]]
+id = "archives"
+title = "Archives"
+data = true
+advice = "Archives are already compressed; check whether they duplicate extracted folders next to them (shardkeep compare-zip)."
+
+[[category]]
+id = "logs"
+title = "Training logs and log files"
+data = true
+advice = "Logs compress well; pack them if you need them, for example for training plots."
+
+[[category]]
+id = "tables"
+title = "Tables and text data (csv, jsonl, json, txt)"
+data = true
+advice = "Tables and text data compress very well: pack them into shards."
+
+[[category]]
+id = "other"
+title = "Other"
+data = true
+advice = "Check manually."
+
+# ---------------------------------------------------------------------------------------------
+[[rule]]
+category = "git"
+dir = [".git"]
+
+[[rule]]
+category = "env"
+dir = ["venv", ".venv", "site-packages", "dist-packages", "node_modules", "__pycache__",
+       ".ipynb_checkpoints", ".mypy_cache", ".pytest_cache", ".ruff_cache", "conda-meta",
+       ".tox", ".cache", "build", ".eggs", ".next", ".parcel-cache", ".gradle", "*.egg-info"]
+
+[[rule]]
+category = "env"
+ext = [".pyc", ".pyo", ".o", ".obj", ".so", ".pyd", ".dll"]
+max_size = "50MB"
+
+[[rule]]
+category = "logs"
+name = ["*tfevents*"]
+
+[[rule]]
+category = "logs"
+ext = [".log"]
+
+[[rule]]
+category = "logs"
+dir = ["lightning_logs", "wandb", "mlruns", "tb_logs", "tensorboard", "logs", "runs"]
+not_ext = [".pt", ".pth", ".ckpt", ".safetensors", ".onnx", ".bin"]
+
+[[rule]]
+category = "arrays"
+name = ["*.tfrecord*", "*.tfrecords*"]
+
+# .pt, .pth and .bin in data folders are usually saved tensors, not weights
+[[rule]]
+category = "arrays"
+ext = [".pt", ".pth", ".bin"]
+dir = ["*preprocess*", "*processed*", "*dataset*", "data", "*features*"]
+not_dir = ["*checkpoint*", "*ckpt*", "*weights*", "*pretrained*", "*saved_model*", "models"]
+
+[[rule]]
+category = "checkpoint"
+ext = [".pt", ".pth", ".ckpt", ".safetensors", ".onnx", ".pb", ".tflite", ".engine", ".trt", ".bin",
+       ".pdparams", ".caffemodel", ".weights", ".keras", ".mar", ".gguf"]
+
+# pickles and HDF5 files in checkpoint folders are usually weights
+[[rule]]
+category = "checkpoint"
+ext = [".pkl", ".h5", ".hdf5", ".joblib"]
+dir = ["*checkpoint*", "*ckpt*", "*weights*", "*pretrained*", "*saved_model*", "models"]
+not_dir = ["*preprocess*", "*processed*", "*dataset*", "data", "*features*"]
+
+[[rule]]
+category = "arrays"
+ext = [".npz", ".npy", ".pkl", ".pickle", ".h5", ".hdf5", ".parquet", ".arrow", ".feather", ".zarr",
+       ".lmdb", ".mdb", ".mat", ".msgpack", ".joblib", ".pcd", ".ply", ".safetensors", ".nc", ".tiledb"]
+
+[[rule]]
+category = "images"
+ext = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".exr", ".avif", ".heic", ".jxl", ".dng",
+       ".raw", ".nef", ".cr2", ".psd"]
+
+[[rule]]
+category = "video"
+ext = [".mp4", ".avi", ".mov", ".mkv", ".webm", ".gif", ".m4v", ".mpg", ".mpeg"]
+
+[[rule]]
+category = "archives"
+ext = [".zip", ".tar", ".gz", ".tgz", ".7z", ".rar", ".xz", ".zst", ".bz2", ".lz4", ".tar.gz", ".tar.xz",
+       ".tar.zst", ".tar.bz2"]
+
+# JSON configuration files are small or have well-known names; other JSON files are data
+[[rule]]
+category = "code"
+ext = [".json"]
+name = ["package.json", "package-lock.json", "tsconfig.json", "launch.json", "settings.json", "tasks.json",
+        "extensions.json", "manifest.json", "composer.json", "vercel.json", "*config.json", "*rc.json"]
+
+[[rule]]
+category = "code"
+ext = [".json"]
+max_size = "2KB"
+
+# text files with well-known names are project files; other .txt files (annotations, corpora) are data
+[[rule]]
+category = "code"
+ext = [".txt"]
+name = ["requirements*.txt", "readme*", "license*", "notice*", "authors*", "changelog*", "cmakelists.txt",
+        "constraints*.txt", "version.txt"]
+
+[[rule]]
+category = "tables"
+ext = [".csv", ".tsv", ".jsonl", ".ndjson", ".json", ".txt", ".xml"]
+min_size = "1MB"
+
+[[rule]]
+category = "tables"
+ext = [".csv", ".tsv", ".jsonl", ".ndjson", ".json", ".txt"]
+
+[[rule]]
+category = "code"
+ext = [".py", ".pyx", ".pxd", ".ipynb", ".c", ".cc", ".cpp", ".h", ".hpp", ".cu", ".cuh", ".js", ".mjs",
+       ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".css", ".scss", ".html", ".htm", ".sh", ".bat", ".cmd",
+       ".ps1", ".md", ".rst", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".conf", ".proto", ".cmake",
+       ".gitignore", ".gitattributes", ".lock", ".xml", ".svg", ".map", ".env", ".sql", ".r", ".m",
+       ".java", ".kt", ".go", ".rs", ".swift", ".rb", ".php", ".lua", ".jl", ".tex", ".bib"]
+
+[[rule]]
+category = "code"
+ext = [""]
+name = ["makefile", "dockerfile", "license", "readme", "requirements", "setup", "authors", "notice"]
+max_size = "1MB"
+
+# ---------------------------------------------------------------------------------------------
+# Notices: text added to the report when any file or folder path matches one of the patterns.
+# Example for data with license restrictions:
+#
+# [[notice]]
+# path = ["*waymo*", "*.tfrecord*"]
+# text = "The project contains Waymo Open Dataset data: it may be shared only with registered users."

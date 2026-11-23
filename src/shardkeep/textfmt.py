@@ -33,3 +33,11 @@ def plural(n, forms):
 
 
 FILES = ("file", "files")
+
+
+def ts_local(t):
+    """Время Unix в виде «2026-11-23 14:05» или пустая строка."""
+    if not t:
+        return ""
+    import datetime as dt
+    return dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")

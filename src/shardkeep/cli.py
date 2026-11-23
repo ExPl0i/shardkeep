@@ -102,6 +102,40 @@ def add_card(sub):
     p.set_defaults(func=run_card)
 
 
+def run_analyze(a):
+    from shardkeep.analyze import analyze
+    analyze(a.root, out=a.out, depth=a.depth, top=a.top, dup_mode=a.dup_mode, dup_min_mb=a.dup_min_mb,
+            sample_mb=a.sample_mb, sample_files=a.sample_files, small_kb=a.small_kb, min_report_mb=a.min_report_mb,
+            no_git=a.no_git, excludes=a.exclude, rules_file=a.rules, default_rules=not a.no_default_rules,
+            csv_delimiter=a.csv_delimiter)
+    return 0
+
+
+def add_analyze(sub):
+    p = sub.add_parser("analyze", help=COMMANDS["analyze"], description=(
+        "Analyze a folder before freeing disk space: sizes by folder and file category, duplicates, state of git "
+        "repositories, compression estimate and recommendations. Read-only: nothing is changed or deleted."))
+    p.add_argument("root", help="folder to analyze")
+    p.add_argument("--out", help="report folder (default: shardkeep_report_<name>_<date> in the current folder)")
+    p.add_argument("--depth", type=int, default=2, help="folder depth for the statistics (default 2)")
+    p.add_argument("--top", type=int, default=300, help="how many largest files to list (default 300)")
+    p.add_argument("--dup-mode", choices=["full", "quick", "off"], default="full",
+                   help="duplicate search: full (full hash), quick (partial hash) or off")
+    p.add_argument("--dup-min-mb", type=float, default=1.0, help="minimum file size for duplicate search, MB")
+    p.add_argument("--sample-mb", type=int, default=384,
+                   help="how many MB to read for the compression estimate (0: no estimate)")
+    p.add_argument("--sample-files", type=int, default=12, help="sample files per folder and category")
+    p.add_argument("--small-kb", type=int, default=512, help="files smaller than this are counted as small, KB")
+    p.add_argument("--min-report-mb", type=int, default=50, help="folders smaller than this get no details, MB")
+    p.add_argument("--no-git", action="store_true", help="do not inspect git repositories")
+    p.add_argument("--exclude", action="append", default=[], help="name or path pattern to skip (repeatable)")
+    p.add_argument("--rules", help="your own TOML file with categories and rules (checked before the built-in ones)")
+    p.add_argument("--no-default-rules", action="store_true", help="use only the rules from --rules")
+    p.add_argument("--csv-delimiter", default=",", help="CSV column separator (default \",\"; use \";\" for Excel "
+                   "with a comma as the decimal separator)")
+    p.set_defaults(func=run_analyze)
+
+
 def run_verify(a):
     from shardkeep.verify import verify
     return 0 if verify(a.out, name=a.name, src=a.src, allow_skipped=a.allow_skipped).ok else 1
@@ -158,7 +192,7 @@ def add_unpack(sub):
     p.set_defaults(func=run_unpack)
 
 
-ADDERS = {"pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
+ADDERS = {"analyze": add_analyze, "pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
 
 
 def build_parser():

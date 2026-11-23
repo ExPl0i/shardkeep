@@ -37,7 +37,8 @@ version = { attr = "shardkeep.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-shardkeep = ["templates/*", "*.toml"]
+shardkeep = ["templates/*"]
+"shardkeep.analyze" = ["*.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
