@@ -5,6 +5,7 @@ import sys
 
 from shardkeep import __version__
 from shardkeep.errors import UserError
+from shardkeep.profiles import PROFILES
 
 COMMANDS = {
     "analyze": "разобрать папку: объем, категории файлов, дубликаты, git, оценка сжатия",
@@ -32,7 +33,8 @@ def setup_console():
 def run_pack(a):
     from shardkeep.pack import pack
     pack(a.src, a.out, name=a.name, codec=a.codec, level=a.level, threads=a.threads,
-         long_mode=False if a.no_long else None, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env)
+         long_mode=False if a.no_long else None, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env,
+         profile=a.profile)
     print(f"\nГотово. Следующий шаг: проверка архивов\n"
           f'  shardkeep verify "{a.out}" --src "{a.src}"' + (f" --name {a.name}" if a.name else ""))
     return 0
@@ -56,9 +58,15 @@ def add_pack(sub):
     p.add_argument("--name", help="имя набора (по умолчанию имя папки)")
     p.add_argument("--shard-gb", type=float,
                    help="объем исходных данных в одной части, ГБ (по умолчанию 4)")
-    p.add_argument("--codec", choices=["auto", "zstd", "xz"], default="auto")
-    p.add_argument("--level", type=int, help="уровень сжатия: zstd 1–22 (по умолчанию 19), xz 0–9 (по умолчанию 9)")
-    p.add_argument("--threads", type=int, default=0, help="потоков zstd (0 – все ядра)")
+    p.add_argument("--profile", choices=list(PROFILES),
+                   help="профиль сжатия (по умолчанию auto): "
+                        + "; ".join(f"{k} – {v.title}" for k, v in PROFILES.items()))
+    p.add_argument("--codec", choices=["auto", "zstd", "xz"], default="auto",
+                   help="zstd (по умолчанию) или xz: сжимает так же сильно, но в несколько раз медленнее")
+    p.add_argument("--level", type=int,
+                   help="уровень сжатия хорошо сжимаемых файлов: zstd 1–22, xz 0–9 (по умолчанию из профиля)")
+    p.add_argument("--threads", type=int, default=0,
+                   help="потоков zstd (0 – по числу ядер, но не больше, чем позволяет свободная память)")
     p.add_argument("--no-long", action="store_true", help="отключить режим длинных совпадений zstd")
     p.add_argument("--exclude", action="append", default=[], help="шаблон имени или пути для пропуска")
     p.add_argument("--include-env", action="store_true",

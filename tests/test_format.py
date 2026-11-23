@@ -26,7 +26,7 @@ def sha256_file(p):
 def test_shard_meta_written(tmp_path, src_tree):
     src, files = src_tree
     out = tmp_path / "out"
-    pack(src, out, name="s", level=5, threads=1, shard_gb=SMALL)
+    pack(src, out, name="s", level=5, threads=1, shard_gb=SMALL, profile="normal")
     shards = layout.shard_list(out, "s")
     total_files = 0
     for sh in shards:
@@ -63,7 +63,7 @@ def test_resume_keeps_saved_level_by_default(tmp_path, src_tree, monkeypatch):
     out = tmp_path / "out"
     _interrupt_after(monkeypatch, 1)
     with pytest.raises(KeyboardInterrupt):
-        pack(src, out, name="s", level=7, threads=1, shard_gb=SMALL)
+        pack(src, out, name="s", level=7, threads=1, shard_gb=SMALL, profile="normal")
     monkeypatch.undo()
     pack(src, out, name="s", threads=1)  # уровень не указан: берется сохраненный 7, а не 19
     levels = {layout.read_shard_meta(out, "s", sh.index)["level"] for sh in layout.shard_list(out, "s")}
@@ -75,7 +75,7 @@ def test_resume_with_other_level_warns_and_records(tmp_path, src_tree, monkeypat
     out = tmp_path / "out"
     _interrupt_after(monkeypatch, 1)
     with pytest.raises(KeyboardInterrupt):
-        pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL)
+        pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL, profile="normal")
     monkeypatch.undo()
     capsys.readouterr()
     s = pack(src, out, name="s", level=1, threads=1, shard_gb=1.0)
@@ -139,7 +139,7 @@ def test_unreadable_file_recorded(tmp_path, src_tree, monkeypatch, behavior, cap
     out = tmp_path / "out"
     target = "tables/part_2.csv"
     patch_open(monkeypatch, target, behavior)
-    s = pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL)
+    s = pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL, profile="normal")
     monkeypatch.undo()
     assert s["skipped_files"] == 1
     assert s["files"] == len(files) - 1
@@ -164,7 +164,7 @@ def test_unreadable_file_recorded(tmp_path, src_tree, monkeypatch, behavior, cap
 def packed(tmp_path, src_tree):
     src, files = src_tree
     out = tmp_path / "out"
-    pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL)
+    pack(src, out, name="s", level=3, threads=1, shard_gb=SMALL, profile="normal")
     return src, out
 
 

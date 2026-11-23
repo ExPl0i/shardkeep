@@ -12,6 +12,7 @@ from shardkeep.codecs import DEFAULT_LEVEL, WINDOW_LOG, CountingWriter, HashingR
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path, read_json, walk_files, write_json
 from shardkeep.plan import by_shard, load_plan, make_plan, save_plan
+from shardkeep.profiles import DEFAULT_PROFILE, LOW, PROFILES, choose_threads, classify_extensions, describe_classes
 from shardkeep.textfmt import fmt_time, human, num, pct
 
 FORMAT_VERSION = 2
@@ -33,14 +34,17 @@ class _ReadFailed(Exception):
 
 
 def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=None, shard_gb=None,
-         excludes=(), include_env=False):
+         excludes=(), include_env=False, profile=None):
     """Упаковывает папку src в набор name внутри папки out. Повторный запуск продолжает упаковку.
 
-    Параметры со значением None при продолжении берутся из сохраненных настроек набора.
+    profile – профиль сжатия (см. shardkeep.profiles.PROFILES); level задает уровень для хорошо
+    сжимаемых файлов. Параметры со значением None при продолжении берутся из сохраненных настроек набора.
     """
     src = os.path.abspath(src)
     if not os.path.isdir(src):
         raise UserError(f"Папка не найдена: {src}")
+    if profile is not None and profile not in PROFILES:
+        raise UserError(f"Неизвестный профиль сжатия: {profile}. Есть: {', '.join(PROFILES)}")
     name = name or os.path.basename(src.rstrip("\\/"))
     os.makedirs(layout.data_dir(out, name), exist_ok=True)
     os.makedirs(layout.manifest_dir(out, name), exist_ok=True)
@@ -50,32 +54,58 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
     if os.path.exists(plan_path):
         meta = read_json(meta_path)
         codec, level, long_mode = _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes,
-                                                   include_env)
+                                                   include_env, profile)
+        level_low = meta.get("level_low")
         meta.setdefault("sessions", []).append({"started": _now(), "level": level, "long": long_mode,
                                                 "tool": TOOL})
         write_json(meta_path, meta)
         plan = load_plan(plan_path)
         print(f"Продолжение упаковки по сохраненному плану: {num(len(plan))} файлов")
     else:
+        prof = PROFILES[profile or DEFAULT_PROFILE]
         codec = pick_codec(codec)
-        level = level if level is not None else DEFAULT_LEVEL[codec]
-        long_mode = True if long_mode is None else bool(long_mode)
+        high, level_low = prof.levels(codec)
+        level = high if level is None else level
+        long_mode = prof.long if long_mode is None else bool(long_mode)
         shard_gb = shard_gb or DEFAULT_SHARD_GB
         print(f"Обход {src} ...")
         files = walk_files(src, excludes, include_env)
-        plan = make_plan(files, int(shard_gb * 2**30))
+        classes = None
+        if prof.classify and level_low is not None:
+            classes, stats = classify_extensions(long_path(src), files, prof.classify)
+            for line in describe_classes(stats, classes):
+                print(line)
+            if not any(c == LOW for c in classes.values()):
+                classes, level_low = None, None
+        else:
+            level_low = None
+        plan = make_plan(files, int(shard_gb * 2**30), classes)
         meta = {"name": name, "source": src, "codec": codec, "level": level, "long": long_mode,
                 "shard_gb": shard_gb, "created": _now(),
-                "format": FORMAT_VERSION, "tool": TOOL, "window_log": WINDOW_LOG if long_mode else None,
+                "format": FORMAT_VERSION, "tool": TOOL, "profile": prof.name, "level_low": level_low,
+                "window_log": WINDOW_LOG if long_mode else None,
                 "excludes": list(excludes), "include_env": bool(include_env)}
         write_json(meta_path, meta)
         save_plan(plan_path, plan)  # план последним: признак начатого набора
 
-    threads = threads or (os.cpu_count() or 1)
     groups = by_shard(plan)
     total = sum(e["n"] for e in plan)
+    thread_cache = {}
+
+    def shard_params(entries):
+        low_bytes = sum(e["n"] for e in entries if e.get("c") == LOW)
+        is_low = level_low is not None and low_bytes * 2 > sum(e["n"] for e in entries)
+        lvl, lng = (level_low, False) if is_low else (level, long_mode)
+        if (lvl, lng) not in thread_cache:
+            n, note = choose_threads(codec, lvl, lng, threads)
+            thread_cache[(lvl, lng)] = n
+            if note:
+                print(note)
+        return {"codec": codec, "level": lvl, "long": lng, "threads": thread_cache[(lvl, lng)]}
+
+    levels_txt = f"уровень {level}" + (f", уже сжатые файлы – уровень {level_low}" if level_low is not None else "")
     print(f"Набор {name}: {num(len(plan))} файлов, {human(total)}, частей: {len(groups)}; "
-          f"сжатие {codec} уровня {level}, потоков {threads if codec == 'zstd' else 1}")
+          f"сжатие {codec}: {levels_txt}" + (", режим длинных совпадений" if long_mode and codec == "zstd" else ""))
 
     src_os = long_path(src)
     t_start = time.monotonic()
@@ -88,7 +118,7 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
             done_bytes += raw
             continue
         t0 = time.monotonic()
-        params = {"codec": codec, "level": level, "long": long_mode, "threads": threads}
+        params = shard_params(entries)
         info = write_shard(src_os, entries, sf, mf, layout.shard_meta_file(out, name, i), params)
         done_bytes += raw
         processed_bytes += raw
@@ -99,13 +129,14 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         comp = info["compressed_bytes"]
         skipped = len(info["skipped"])
         print(f"  часть {i + 1}/{len(groups)}: {human(raw)} -> {human(comp)} "
-              f"({pct(comp, raw)}), {human(speed)}/с, осталось примерно {fmt_time(eta)}"
+              f"({pct(comp, raw)}), уровень {params['level']}, потоков {params['threads']}, {human(speed)}/с, "
+              f"осталось примерно {fmt_time(eta)}"
               + (f", не удалось прочитать файлов: {skipped}" if skipped else ""))
 
     return write_summary(out, name)
 
 
-def _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes, include_env):
+def _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes, include_env, profile=None):
     """Параметры для продолжения упаковки; предупреждает, если они отличаются от сохраненных."""
     saved_codec = meta["codec"]
     if codec not in (None, "auto") and codec != saved_codec:
@@ -113,6 +144,9 @@ def _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes, in
                         "или упакуйте в новый набор")
     saved_level = meta.get("level", DEFAULT_LEVEL[saved_codec])
     saved_long = meta.get("long", True)
+    if profile is not None and profile != meta.get("profile"):
+        print(f"Внимание: профиль {profile} не применяется: набор {name} продолжается по сохраненному плану"
+              + (f" с профилем {meta['profile']}." if meta.get("profile") else "."))
     if level is not None and level != saved_level:
         print(f"Внимание: набор {name} начат с уровнем сжатия {saved_level}, оставшиеся части будут сжаты "
               f"с уровнем {level}. Уровень каждой части записывается рядом с ее манифестом.")

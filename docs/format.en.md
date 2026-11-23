@@ -85,7 +85,7 @@ The manifest is written last, after the shard file and the parameters file. A ma
 
 ## Plan (`plan.jsonl.gz`)
 
-A gzip-compressed list of all files of the set in packing order: `{"s": shard number, "p": path, "n": size, "m": mtime}`. The plan is created once, on the first packing run. A resumed run takes the shard contents from it, so files added to the source folder later do not enter the set. `verify --src` reports such files.
+A gzip-compressed list of all files of the set in packing order: `{"s": shard number, "p": path, "n": size, "m": mtime}`. In format 2, already compressed files (photos, video, archives) have `"c": "low"`: they go into separate shards compressed at a low level. The plan is created once, on the first packing run. A resumed run takes the shard contents from it, so files added to the source folder later do not enter the set. `verify --src` reports such files.
 
 ## Set parameters (`pack_settings.json`)
 
@@ -93,13 +93,13 @@ A gzip-compressed list of all files of the set in packing order: `{"s": shard nu
 {
  "name": "set1", "source": "D:\\data\\set1", "codec": "zstd", "level": 19, "long": true,
  "shard_gb": 4.0, "created": "2026-11-23T12:00:00",
- "format": 2, "tool": "shardkeep 0.1.0", "window_log": 27,
+ "format": 2, "tool": "shardkeep 0.1.0", "profile": "auto", "level_low": 1, "window_log": 27,
  "excludes": ["*.tmp"], "include_env": false,
  "sessions": [{"started": "2026-11-24T09:00:00", "level": 22, "long": true, "tool": "shardkeep 0.1.0"}]
 }
 ```
 
-The fields on the first line exist in both formats. `level` is the level of the first run. `excludes` and `include_env` are the file selection rules; `verify --src` uses them to find source files that did not reach the archives. `sessions` lists resumed runs and their parameters.
+The fields on the first line exist in both formats. `level` is the level for well-compressible files on the first run, `level_low` the level for already compressed files (`null` when one level is used for everything), `profile` the compression profile. `excludes` and `include_env` are the file selection rules; `verify --src` uses them to find source files that did not reach the archives. `sessions` lists resumed runs and their parameters.
 
 ## Summary (`summary.json`)
 
