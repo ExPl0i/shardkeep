@@ -40,7 +40,7 @@ def walk_files(src, excludes=(), include_env=False, on_error=print):
             with os.scandir(path) as it:
                 entries = list(it)
         except OSError as exc:
-            on_error(f"  пропущено {'/'.join(parts) or '.'}: {exc}")
+            on_error(f"  skipped {'/'.join(parts) or '.'}: {exc}")
             continue
         for e in entries:
             rel = "/".join(parts + (e.name,))
@@ -57,7 +57,7 @@ def walk_files(src, excludes=(), include_env=False, on_error=print):
                     st = e.stat(follow_symlinks=False)
                     out.append((rel, st.st_size, int(st.st_mtime)))
             except OSError as exc:
-                on_error(f"  пропущено {rel}: {exc}")
+                on_error(f"  skipped {rel}: {exc}")
     return out
 
 

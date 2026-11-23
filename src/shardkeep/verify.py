@@ -52,20 +52,20 @@ def check_shard(shard, info=None):
                         h.update(b)
                     exp = expected.get(m.name)
                     if exp is None:
-                        bad.append(f"лишний файл {m.name}")
+                        bad.append(f"unexpected file {m.name}")
                     elif exp["sha256"] != h.hexdigest() or exp["size"] != m.size:
-                        bad.append(f"не совпадает {m.name}")
+                        bad.append(f"content mismatch {m.name}")
                     seen.add(m.name)
             drain(rd)
     except Exception as exc:  # noqa: BLE001
-        bad.append(f"архив поврежден: {exc}")
+        bad.append(f"archive is damaged: {exc}")
     else:
         if info and info.get("sha256"):
             if os.path.getsize(shard.path) != info.get("compressed_bytes") or file_hash.hexdigest() != info["sha256"]:
-                bad.append("файл части отличается от записанного при упаковке (размер или SHA-256)")
+                bad.append("shard file differs from the one written during packing (size or SHA-256)")
     missing = set(expected) - seen
     if missing:
-        bad.append(f"в архиве нет {len(missing)} файлов из манифеста")
+        bad.append(f"{len(missing)} files from the manifest are missing in the archive")
     return bad, len(seen), expected
 
 
@@ -104,8 +104,8 @@ def _sets_for_src(out, names, src):
     match = {n for n in names
              if os.path.normcase(os.path.abspath(_load_settings(out, n).get("source", ""))) == src_abs}
     if not match:
-        raise UserError("В папке несколько наборов, и ни один не упакован из указанной исходной папки. "
-                        "Укажите набор параметром --name.")
+        raise UserError("The folder holds several sets and none was packed from the given source folder. "
+                        "Choose a set with --name.")
     return match
 
 
@@ -116,8 +116,8 @@ def verify(out, name=None, src=None, report=True, allow_skipped=False):
     for nm in names:
         settings = _load_settings(out, nm)
         state = layout.scan_set(out, nm, _planned(out, nm))
-        print(f"Проверка набора {nm}: частей {len(state.shards)}"
-              + (f" из {state.planned}" if state.planned is not None else ""))
+        print(f"Verifying set {nm}: {len(state.shards)}"
+              + (f" of {state.planned}" if state.planned is not None else "") + " shards")
         _check_completeness(res, state)
         n_files = 0
         archived = set()
@@ -129,14 +129,14 @@ def verify(out, name=None, src=None, report=True, allow_skipped=False):
             n_files += n
             archived.update(expected)
             skipped_paths.update(x["path"] for x in skipped)
-            print(f"  {shard.filename}: {'OK' if not bad else 'ОШИБКА'}, файлов {num(n)}"
-                  + (f", не прочитано при упаковке: {len(skipped)}" if skipped else ""))
+            print(f"  {shard.filename}: {'OK' if not bad else 'ERROR'}, {num(n)} files"
+                  + (f", unreadable during packing: {len(skipped)}" if skipped else ""))
             for b in bad[:10]:
                 print(f"    {b}")
             if bad:
                 res.fail(f"{shard.path}: " + "; ".join(bad[:20]))
             if skipped:
-                msg = (f"{shard.filename}: {len(skipped)} файлов не удалось прочитать при упаковке, их нет в архиве: "
+                msg = (f"{shard.filename}: {len(skipped)} files could not be read during packing and are not in the archive: "
                        + ", ".join(s["path"] for s in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
                 print("    " + msg)
                 if allow_skipped:
@@ -146,44 +146,44 @@ def verify(out, name=None, src=None, report=True, allow_skipped=False):
             if nm in src_sets:
                 changed = check_source(src, expected)
                 if changed:
-                    msg = f"{shard.filename}: {changed} исходных файлов изменились или исчезли после упаковки"
+                    msg = f"{shard.filename}: {changed} source files changed or disappeared after packing"
                     print("    " + msg)
                     res.fail(msg)
         if nm in src_sets:
             _check_new_files(res, src, settings, archived | skipped_paths, state)
         res.files += n_files
         res.shards += len(state.shards)
-        print(f"  проверено файлов: {num(n_files)}")
+        print(f"  files verified: {num(n_files)}")
 
     if report:
-        lines = [f"{dt.datetime.now():%d.%m.%Y %H:%M} {'OK' if res.ok else 'ОШИБКИ'}"] + res.problems
+        lines = [f"{dt.datetime.now():%d.%m.%Y %H:%M} {'OK' if res.ok else 'ERRORS'}"] + res.problems
         if res.warnings:
-            lines += ["", "Предупреждения:"] + res.warnings
+            lines += ["", "Warnings:"] + res.warnings
         write_text(os.path.join(out, "verify_report.txt"), "\n".join(lines) + "\n")
     if res.ok:
-        print("\nВсе архивы целы и совпадают с манифестами. Исходные данные можно удалять "
-              "после загрузки архивов в хранилище.")
+        print("\nAll archives are intact and match their manifests. The source data can be deleted "
+              "once the archives are uploaded to storage.")
     else:
-        print("\nЕсть ошибки (см. verify_report.txt). Исходные данные удалять нельзя.")
+        print("\nErrors found (see verify_report.txt). Do not delete the source data.")
     return res
 
 
 def _check_completeness(res, state):
     if state.missing_indexes:
-        msg = (f"набор {state.name}: упаковка не завершена, готово частей {len(state.shards)} из {state.planned}; "
-               "запустите pack повторно с теми же параметрами")
+        msg = (f"set {state.name}: packing is not finished, {len(state.shards)} of {state.planned} shards done; "
+               "run pack again with the same arguments")
         print("  " + msg)
         res.fail(msg)
     for fn in state.no_data:
-        msg = f"набор {state.name}: есть манифест {fn}, но нет файла части"
+        msg = f"set {state.name}: manifest {fn} exists but the shard file is missing"
         print("  " + msg)
         res.fail(msg)
     for fn in state.no_manifest:
-        msg = f"набор {state.name}: часть {fn} не дописана (нет манифеста)"
+        msg = f"set {state.name}: shard {fn} is incomplete (no manifest)"
         print("  " + msg)
         res.fail(msg)
     if state.partial:
-        res.warnings.append(f"набор {state.name}: временные файлы незавершенной упаковки: " + ", ".join(state.partial))
+        res.warnings.append(f"set {state.name}: temporary files of unfinished packing: " + ", ".join(state.partial))
 
 
 def _check_new_files(res, src, settings, known, state):
@@ -194,7 +194,7 @@ def _check_new_files(res, src, settings, known, state):
                        on_error=lambda msg: None)
     new = sorted(rel for rel, _, _ in files if rel not in known)
     if new:
-        msg = (f"набор {state.name}: в исходной папке {num(len(new))} файлов, которых нет в архивах: "
+        msg = (f"set {state.name}: {num(len(new))} files in the source folder are not in the archives: "
                + ", ".join(new[:5]) + (" ..." if len(new) > 5 else ""))
         print("  " + msg)
         res.fail(msg)

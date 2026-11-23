@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shardkeep"
 dynamic = ["version"]
-description = "Упаковка больших папок с данными в сжатые части tar + zstd, проверка, загрузка в Hugging Face и восстановление"
+description = "Pack large data folders into compressed tar + zstd shards with manifests, verify them, upload to Hugging Face or cloud storage, and restore"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -20,7 +20,7 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: System :: Archiving :: Backup",
     "Topic :: System :: Archiving :: Compression",
-    "Natural Language :: Russian",
+    "Natural Language :: English",
 ]
 
 [project.optional-dependencies]

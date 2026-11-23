@@ -48,13 +48,13 @@ class Profile:
 
 
 PROFILES = {
-    "auto": Profile("auto", "уровень по пробному сжатию выборки: сжимаемые файлы – zstd 19, уже сжатые – zstd 1",
+    "auto": Profile("auto", "level chosen by test-compressing a sample: compressible files zstd 19, already compressed zstd 1",
                     19, 1, 9, 0, True, "trial"),
-    "max": Profile("max", "максимальное сжатие всех файлов: zstd 22, медленно", 22, None, 10, None, True, None),
-    "normal": Profile("normal", "zstd 19 для всех файлов (как в исходном pack_shards.py)", 19, None, 9, None, True,
+    "max": Profile("max", "maximum compression for all files: zstd 22, slow", 22, None, 10, None, True, None),
+    "normal": Profile("normal", "zstd 19 for all files (as in the original pack_shards.py)", 19, None, 9, None, True,
                       None),
-    "fast": Profile("fast", "быстрое сжатие: zstd 3 без режима длинных совпадений", 3, None, 3, None, False, None),
-    "media": Profile("media", "уровень по расширению: фото, видео и архивы – zstd 1, остальное – zstd 19",
+    "fast": Profile("fast", "zstd 3 without long-distance matching", 3, None, 3, None, False, None),
+    "media": Profile("media", "level chosen by extension: photos, video and archives zstd 1, everything else zstd 19",
                      19, 1, 9, 0, True, "ext"),
 }
 DEFAULT_PROFILE = "auto"
@@ -80,7 +80,7 @@ def classify_extensions(src_os, files, method, sample_files=6, chunk=1 << 20, mi
         by_table = LOW if ext in INCOMPRESSIBLE_EXT else HIGH
         if method != "trial" or total < min_bytes:
             classes[ext] = by_table
-            stats[ext] = (total, None, "по расширению")
+            stats[ext] = (total, None, "extension")
             continue
         sample = [it for it in sorted(items) if it[1] > 0]
         if len(sample) > sample_files:
@@ -88,10 +88,10 @@ def classify_extensions(src_os, files, method, sample_files=6, chunk=1 << 20, mi
         ratio = _trial_ratio(src_os, sample, chunk)
         if ratio is None:
             classes[ext] = by_table
-            stats[ext] = (total, None, "по расширению")
+            stats[ext] = (total, None, "extension")
         else:
             classes[ext] = LOW if ratio > LOW_RATIO else HIGH
-            stats[ext] = (total, ratio, "пробное сжатие")
+            stats[ext] = (total, ratio, "trial")
     return classes, stats
 
 
@@ -128,9 +128,9 @@ def describe_classes(stats, classes):
     low_total = sum(st[0] for _, st in low)
     parts = []
     for e, (b, ratio, _) in sorted(low, key=lambda x: -x[1][0])[:8]:
-        r = f", пробное сжатие до {pct(ratio, 1)}" if ratio is not None else ""
-        parts.append(f"{e or '(без расширения)'} {human(b)}{r}")
-    return [f"Уже сжатые файлы: {human(low_total)} ({pct(low_total, total)} объема) – " + "; ".join(parts)]
+        r = f", test compression to {pct(ratio, 1)}" if ratio is not None else ""
+        parts.append(f"{e or '(no extension)'} {human(b)}{r}")
+    return [f"Already compressed files: {human(low_total)} ({pct(low_total, total)} of the data): " + "; ".join(parts)]
 
 
 # ----------------------------------------------------------------------------
@@ -187,7 +187,7 @@ def choose_threads(codec, level, long_mode, requested=0, avail=None):
     fit = max(1, int(max(avail - RESERVE, 0) // per))
     if want <= fit:
         return want, None
-    note = (f"свободно {human(avail)} памяти, одному потоку zstd уровня {level} нужно примерно {human(per)}")
+    note = (f"{human(avail)} of memory free, one zstd level {level} thread needs about {human(per)}")
     if requested:
-        return want, f"Внимание: потоков {want} может не хватить памяти ({note}). Рекомендуется не больше {fit}."
-    return fit, f"Потоков {fit} вместо {cpu}: {note}."
+        return want, f"Warning: memory may be insufficient for {want} threads ({note}). Recommended: at most {fit}."
+    return fit, f"Using {fit} threads instead of {cpu}: {note}."

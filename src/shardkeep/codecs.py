@@ -32,9 +32,9 @@ def pick_codec(requested):
     if requested in (None, "auto"):
         return "zstd" if have_zstd() else "xz"
     if requested == "zstd" and not have_zstd():
-        raise UserError("Для zstd установите пакет: pip install zstandard (или используйте --codec xz)")
+        raise UserError("zstd needs the zstandard package: pip install zstandard (or use --codec xz)")
     if requested not in EXT_BY_CODEC:
-        raise UserError(f"Неизвестный кодек: {requested}")
+        raise UserError(f"Unknown codec: {requested}")
     return requested
 
 
@@ -143,7 +143,7 @@ def open_writer(path, codec, level, threads, long_mode, hasher=None):
                 return Stream(_zstd.ZstdCompressor(compression_params=params).stream_writer(raw, closefd=False),
                               raw)
             if _stdzstd is None:
-                raise UserError("Для zstd установите пакет: pip install zstandard")
+                raise UserError("zstd needs the zstandard package: pip install zstandard")
             P = _stdzstd.CompressionParameter
             opts = {P.compression_level: level, P.checksum_flag: 1}
             if threads > 1:
@@ -176,7 +176,7 @@ def open_reader(path, hasher=None):
                 P = _stdzstd.DecompressionParameter
                 s = _stdzstd.ZstdFile(raw, "rb", options={P.window_log_max: 31})
             else:
-                raise UserError("Для распаковки .zst установите пакет: pip install zstandard")
+                raise UserError("Reading .zst needs the zstandard package: pip install zstandard")
         elif path.endswith(".xz"):
             s = lzma.open(raw, "rb")
         else:

@@ -1,4 +1,4 @@
-"""shardkeep – упаковка больших папок с данными в сжатые части tar + zstd,
-проверка по манифестам, загрузка в хранилище и восстановление."""
+"""shardkeep: pack large data folders into compressed tar + zstd shards with manifests,
+verify them, upload them to storage and restore them."""
 
 __version__ = "0.1.0.dev0"

@@ -42,9 +42,9 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
     """
     src = os.path.abspath(src)
     if not os.path.isdir(src):
-        raise UserError(f"Папка не найдена: {src}")
+        raise UserError(f"Folder not found: {src}")
     if profile is not None and profile not in PROFILES:
-        raise UserError(f"Неизвестный профиль сжатия: {profile}. Есть: {', '.join(PROFILES)}")
+        raise UserError(f"Unknown compression profile: {profile}. Available: {', '.join(PROFILES)}")
     name = name or os.path.basename(src.rstrip("\\/"))
     os.makedirs(layout.data_dir(out, name), exist_ok=True)
     os.makedirs(layout.manifest_dir(out, name), exist_ok=True)
@@ -60,7 +60,7 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
                                                 "tool": TOOL})
         write_json(meta_path, meta)
         plan = load_plan(plan_path)
-        print(f"Продолжение упаковки по сохраненному плану: {num(len(plan))} файлов")
+        print(f"Resuming from the saved plan: {num(len(plan))} files")
     else:
         prof = PROFILES[profile or DEFAULT_PROFILE]
         codec = pick_codec(codec)
@@ -68,7 +68,7 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         level = high if level is None else level
         long_mode = prof.long if long_mode is None else bool(long_mode)
         shard_gb = shard_gb or DEFAULT_SHARD_GB
-        print(f"Обход {src} ...")
+        print(f"Scanning {src} ...")
         files = walk_files(src, excludes, include_env)
         classes = None
         if prof.classify and level_low is not None:
@@ -103,9 +103,9 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
                 print(note)
         return {"codec": codec, "level": lvl, "long": lng, "threads": thread_cache[(lvl, lng)]}
 
-    levels_txt = f"уровень {level}" + (f", уже сжатые файлы – уровень {level_low}" if level_low is not None else "")
-    print(f"Набор {name}: {num(len(plan))} файлов, {human(total)}, частей: {len(groups)}; "
-          f"сжатие {codec}: {levels_txt}" + (", режим длинных совпадений" if long_mode and codec == "zstd" else ""))
+    levels_txt = f"level {level}" + (f", already compressed files level {level_low}" if level_low is not None else "")
+    print(f"Set {name}: {num(len(plan))} files, {human(total)}, {len(groups)} shards; "
+          f"{codec} {levels_txt}" + (", long-distance matching" if long_mode and codec == "zstd" else ""))
 
     src_os = long_path(src)
     t_start = time.monotonic()
@@ -128,10 +128,10 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         eta = (total - done_bytes) / overall if overall > 0 else 0
         comp = info["compressed_bytes"]
         skipped = len(info["skipped"])
-        print(f"  часть {i + 1}/{len(groups)}: {human(raw)} -> {human(comp)} "
-              f"({pct(comp, raw)}), уровень {params['level']}, потоков {params['threads']}, {human(speed)}/с, "
-              f"осталось примерно {fmt_time(eta)}"
-              + (f", не удалось прочитать файлов: {skipped}" if skipped else ""))
+        print(f"  shard {i + 1}/{len(groups)}: {human(raw)} -> {human(comp)} "
+              f"({pct(comp, raw)}), level {params['level']}, {params['threads']} threads, {human(speed)}/s, "
+              f"about {fmt_time(eta)} left"
+              + (f", unreadable files: {skipped}" if skipped else ""))
 
     return write_summary(out, name)
 
@@ -140,26 +140,25 @@ def _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes, in
     """Параметры для продолжения упаковки; предупреждает, если они отличаются от сохраненных."""
     saved_codec = meta["codec"]
     if codec not in (None, "auto") and codec != saved_codec:
-        raise UserError(f"Набор {name} уже начат с кодеком {saved_codec}; укажите --codec {saved_codec} "
-                        "или упакуйте в новый набор")
+        raise UserError(f"Set {name} was started with codec {saved_codec}; use --codec {saved_codec} "
+                        "or pack into a new set")
     saved_level = meta.get("level", DEFAULT_LEVEL[saved_codec])
     saved_long = meta.get("long", True)
     if profile is not None and profile != meta.get("profile"):
-        print(f"Внимание: профиль {profile} не применяется: набор {name} продолжается по сохраненному плану"
-              + (f" с профилем {meta['profile']}." if meta.get("profile") else "."))
+        print(f"Warning: profile {profile} is ignored: set {name} continues from its saved plan"
+              + (f" with profile {meta['profile']}." if meta.get("profile") else "."))
     if level is not None and level != saved_level:
-        print(f"Внимание: набор {name} начат с уровнем сжатия {saved_level}, оставшиеся части будут сжаты "
-              f"с уровнем {level}. Уровень каждой части записывается рядом с ее манифестом.")
+        print(f"Warning: set {name} was started with compression level {saved_level}; the remaining shards "
+              f"will use level {level}. The level of every shard is recorded next to its manifest.")
     if long_mode is not None and bool(long_mode) != saved_long:
-        print(f"Внимание: режим длинных совпадений для оставшихся частей набора {name} "
-              f"{'включен' if long_mode else 'отключен'}, а для готовых частей "
-              f"{'был включен' if saved_long else 'был отключен'}.")
+        print(f"Warning: long-distance matching is {'on' if long_mode else 'off'} for the remaining shards "
+              f"of set {name}, but was {'on' if saved_long else 'off'} for the finished ones.")
     if shard_gb and shard_gb != meta.get("shard_gb"):
-        print(f"Внимание: размер части {shard_gb} ГБ не применяется: набор {name} продолжается по сохраненному "
-              f"плану с размером {meta.get('shard_gb')} ГБ.")
+        print(f"Warning: shard size {shard_gb} GB is ignored: set {name} continues from its saved plan "
+              f"with {meta.get('shard_gb')} GB shards.")
     if (excludes and list(excludes) != meta.get("excludes", [])) or (include_env and not meta.get("include_env")):
-        print(f"Внимание: параметры --exclude и --include-env не применяются: набор {name} продолжается "
-              "по сохраненному плану.")
+        print(f"Warning: --exclude and --include-env are ignored: set {name} continues "
+              "from its saved plan.")
     return (saved_codec,
             saved_level if level is None else level,
             saved_long if long_mode is None else bool(long_mode))
@@ -172,7 +171,7 @@ def write_shard(src_os, entries, sf, mf, meta_f, params):
         try:
             return _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip)
         except _ReadFailed as rf:
-            print(f"  чтение {rf.path} оборвалось ({rf.exc}); часть будет записана заново без этого файла")
+            print(f"  reading {rf.path} failed midway ({rf.exc}); rewriting the shard without this file")
             skip[rf.path] = str(rf.exc)
 
 
@@ -193,7 +192,7 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
             try:
                 f = open(p, "rb")
             except OSError as exc:
-                print(f"  не удалось прочитать {e['p']}: {exc}")
+                print(f"  cannot read {e['p']}: {exc}")
                 skipped.append({"path": e["p"], "error": str(exc)})
                 continue
             with f:
@@ -258,8 +257,9 @@ def write_summary(out, name):
          "format": FORMAT_VERSION, "levels": sorted(levels), "planned_shards": planned,
          "complete": planned is not None and len(shards) == planned, "skipped_files": skipped}
     write_json(layout.summary_file(out, name), s)
-    print(f"Итого {name}: {num(files)} файлов, {human(raw)} -> {human(comp)} ({pct(comp, raw)}), "
-          f"частей {len(shards)}" + (f" из {planned}" if planned is not None and planned != len(shards) else ""))
+    print(f"Total {name}: {num(files)} files, {human(raw)} -> {human(comp)} ({pct(comp, raw)}), "
+          f"{len(shards)} shards" + (f" of {planned}" if planned is not None and planned != len(shards) else ""))
     if skipped:
-        print(f"Внимание: не удалось прочитать файлов: {skipped}; их нет в архивах (список рядом с манифестами).")
+        print(f"Warning: {skipped} files could not be read and are missing from the archives "
+              "(listed in the .meta.json files next to the manifests).")
     return s

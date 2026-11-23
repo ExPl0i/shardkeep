@@ -34,7 +34,7 @@ def unpack(out, dest, name=None, patterns=None, flat=False):
         target_os = long_path(target)
         os.makedirs(target_os, exist_ok=True)
         shards = layout.shard_list(out, nm)
-        print(f"Распаковка {nm} в {target}: частей {len(shards)}")
+        print(f"Extracting {nm} to {target}: {len(shards)} shards")
         for shard in shards:
             n = 0
             with open_reader(shard.path) as rd:
@@ -45,6 +45,6 @@ def unpack(out, dest, name=None, patterns=None, flat=False):
                         if extract_member(tar, m, target_os):
                             n += 1
             total += n
-            print(f"  {shard.filename}: извлечено {num(n)}")
-    print("Готово.")
+            print(f"  {shard.filename}: {num(n)} files extracted")
+    print("Done.")
     return total

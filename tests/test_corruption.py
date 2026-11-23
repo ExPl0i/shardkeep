@@ -50,7 +50,7 @@ def test_manifest_hash_mismatch_detected(packed):
     open(mf, "w", encoding="utf-8").write("\n".join(lines) + "\n")
     res = verify(packed)
     assert not res.ok
-    assert "не совпадает" in res.problems[0]
+    assert "content mismatch" in res.problems[0]
 
 
 def test_manifest_lists_missing_file(packed):
@@ -59,7 +59,7 @@ def test_manifest_lists_missing_file(packed):
         f.write(json.dumps({"path": "ghost.bin", "size": 1, "mtime": 0, "sha256": "0" * 64}) + "\n")
     res = verify(packed)
     assert not res.ok
-    assert "нет 1 файлов" in res.problems[0]
+    assert "1 files from the manifest are missing" in res.problems[0]
 
 
 def test_cli_exit_code_on_corruption(packed):
@@ -69,4 +69,4 @@ def test_cli_exit_code_on_corruption(packed):
         main(["verify", str(packed)])
     assert e.value.code == 1
     report = open(os.path.join(packed, "verify_report.txt"), encoding="utf-8").read()
-    assert report.split("\n")[0].endswith("ОШИБКИ")
+    assert report.split("\n")[0].endswith("ERRORS")

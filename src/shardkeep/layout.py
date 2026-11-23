@@ -70,7 +70,7 @@ def list_names(out, name=None):
         return [name]
     root = os.path.join(out, "manifest")
     if not os.path.isdir(root):
-        raise UserError(f"В папке {out} нет архивов shardkeep (не найдена папка manifest)")
+        raise UserError(f"{out} does not contain shardkeep archives (no manifest folder)")
     return sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
 
 

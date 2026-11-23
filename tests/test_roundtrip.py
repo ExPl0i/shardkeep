@@ -92,4 +92,4 @@ def test_cli_reports_user_error(tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         main(["pack", str(tmp_path / "missing"), str(tmp_path / "out")])
     assert e.value.code == 2
-    assert "Папка не найдена" in capsys.readouterr().err
+    assert "Folder not found" in capsys.readouterr().err

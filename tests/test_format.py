@@ -80,8 +80,8 @@ def test_resume_with_other_level_warns_and_records(tmp_path, src_tree, monkeypat
     capsys.readouterr()
     s = pack(src, out, name="s", level=1, threads=1, shard_gb=1.0)
     text = capsys.readouterr().out
-    assert "начат с уровнем сжатия 3" in text
-    assert "размер части 1.0 ГБ не применяется" in text
+    assert "started with compression level 3" in text
+    assert "shard size 1.0 GB is ignored" in text
     assert s["levels"] == [1, 3]
     shards = layout.shard_list(out, "s")
     assert layout.read_shard_meta(out, "s", 0)["level"] == 3
@@ -149,8 +149,8 @@ def test_unreadable_file_recorded(tmp_path, src_tree, monkeypatch, behavior, cap
     capsys.readouterr()
     res = verify(out, src=src)
     assert not res.ok
-    assert any("не удалось прочитать при упаковке" in p for p in res.problems)
-    assert not any("которых нет в архивах" in p for p in res.problems)  # не дублируется
+    assert any("could not be read during packing" in p for p in res.problems)
+    assert not any("are not in the archives" in p for p in res.problems)  # не дублируется
 
     res = verify(out, src=src, allow_skipped=True)
     assert res.ok and res.warnings
@@ -173,7 +173,7 @@ def test_new_source_file_detected(packed):
     write_file(src, "tables/new_part.csv", b"1;2;3")
     res = verify(out, src=src)
     assert not res.ok
-    assert any("1 файлов, которых нет в архивах" in p and "tables/new_part.csv" in p for p in res.problems)
+    assert any("1 files in the source folder are not in the archives" in p and "tables/new_part.csv" in p for p in res.problems)
 
 
 def test_excluded_files_not_reported_as_new(tmp_path, src_tree):
@@ -189,8 +189,8 @@ def test_missing_shard_file_detected(packed):
     os.remove(sh.path)
     res = verify(out)
     assert not res.ok
-    assert any("нет файла части" in p for p in res.problems)
-    assert any("не завершена" in p for p in res.problems)
+    assert any("shard file is missing" in p for p in res.problems)
+    assert any("packing is not finished" in p for p in res.problems)
 
 
 def test_incomplete_set_detected(packed):
@@ -199,8 +199,8 @@ def test_incomplete_set_detected(packed):
     os.remove(sh.manifest)
     res = verify(out)
     assert not res.ok
-    assert any("не дописана" in p for p in res.problems)
-    assert any("не завершена" in p for p in res.problems)
+    assert any("is incomplete" in p for p in res.problems)
+    assert any("packing is not finished" in p for p in res.problems)
 
 
 def test_recompressed_shard_detected(packed):
@@ -214,7 +214,7 @@ def test_recompressed_shard_detected(packed):
     w.close()
     res = verify(out)
     assert not res.ok
-    assert any("отличается от записанного при упаковке" in p for p in res.problems)
+    assert any("differs from the one written during packing" in p for p in res.problems)
 
 
 def test_src_with_several_sets(tmp_path, src_tree):

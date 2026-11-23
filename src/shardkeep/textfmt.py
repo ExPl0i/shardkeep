@@ -1,39 +1,35 @@
-"""Форматирование чисел, объемов и времени для сообщений на русском."""
+"""Formatting of numbers, sizes and durations for program messages."""
 
 
 def human(n):
-    """Объем в байтах в виде «1,5 ГБ»."""
+    """Size in bytes as "1.5 GB"."""
     n = float(n)
-    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
-        if abs(n) < 1024 or unit == "ТБ":
-            return f"{int(n)} Б" if unit == "Б" else f"{n:.1f} {unit}".replace(".", ",")
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024 or unit == "TB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
         n /= 1024
     return str(n)
 
 
 def num(n):
-    """Целое число с пробелами между разрядами: 1 234 567."""
-    return f"{n:,}".replace(",", " ")
+    """Integer with thousands separators: 1,234,567."""
+    return f"{n:,}"
 
 
 def pct(part, total):
-    return f"{100 * part / total if total else 0:.1f} %".replace(".", ",")
+    return f"{100 * part / total if total else 0:.1f}%"
 
 
 def fmt_time(sec):
     sec = int(sec)
     if sec >= 3600:
-        return f"{sec // 3600} ч {sec % 3600 // 60:02d} мин"
-    return f"{sec // 60} мин {sec % 60:02d} с"
+        return f"{sec // 3600} h {sec % 3600 // 60:02d} min"
+    return f"{sec // 60} min {sec % 60:02d} s"
 
 
 def plural(n, forms):
-    """Форма слова для числа: plural(5, ("файл", "файла", "файлов")) -> "файлов"."""
-    n = abs(int(n)) % 100
-    if 11 <= n <= 14:
-        return forms[2]
-    n %= 10
-    return forms[0] if n == 1 else forms[1] if 2 <= n <= 4 else forms[2]
+    """plural(5, ("file", "files")) -> "files"."""
+    return forms[0] if abs(int(n)) == 1 else forms[1]
 
 
-FILES = ("файл", "файла", "файлов")
+FILES = ("file", "files")
