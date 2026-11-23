@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shardkeep"
+dynamic = ["version"]
+description = "Упаковка больших папок с данными в сжатые части tar + zstd, проверка, загрузка в Hugging Face и восстановление"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = [
+    "zstandard>=0.21",
+    "tomli>=2.0; python_version < '3.11'",
+]
+keywords = ["archive", "backup", "dataset", "zstd", "tar", "huggingface", "shards"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: System :: Archiving :: Backup",
+    "Topic :: System :: Archiving :: Compression",
+    "Natural Language :: Russian",
+]
+
+[project.optional-dependencies]
+hf = ["huggingface_hub>=0.30"]
+dev = ["pytest>=7", "build"]
+
+[project.scripts]
+shardkeep = "shardkeep.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "shardkeep.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+shardkeep = ["templates/*", "*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
