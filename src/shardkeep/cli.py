@@ -16,6 +16,7 @@ COMMANDS = {
     "upload": "upload archives to Hugging Face or through rclone",
     "check-upload": "compare uploaded archives with the local ones",
     "card": "create or update the dataset card",
+    "check": "one check before deleting the source data: archives, source folders and upload",
 }
 
 
@@ -153,6 +154,86 @@ def add_compare_zip(sub):
     p.set_defaults(func=run_compare_zip)
 
 
+def _target(p, required=True):
+    g = p.add_mutually_exclusive_group(required=required)
+    g.add_argument("--hf", metavar="USER/DATASET", help="Hugging Face dataset repository")
+    g.add_argument("--rclone", metavar="REMOTE:PATH", help="rclone target, for example yadisk:backup/dataset")
+
+
+def run_upload(a):
+    from shardkeep.card import load_settings
+    from shardkeep.remote import check_ready
+    check_ready(a.out, force=a.force)
+    if a.hf:
+        from shardkeep.remote import hf
+        private = False if a.public else True if a.private else load_settings(a.out, {})["private"]
+        hf.upload(a.out, a.hf, private=private)
+    else:
+        from shardkeep.remote import rclone
+        rclone.upload(a.out, a.rclone)
+    print(f"\nNext step: check the upload\n  shardkeep check-upload \"{a.out}\" "
+          + (f"--hf {a.hf}" if a.hf else f"--rclone {a.rclone}"))
+    return 0
+
+
+def run_check_upload(a):
+    from shardkeep.remote import print_check
+    if a.hf:
+        from shardkeep.remote import hf
+        res = hf.check(a.out, a.hf, compute_hashes=not a.size_only)
+    else:
+        from shardkeep.remote import rclone
+        res = rclone.check(a.out, a.rclone, compute_hashes=not a.size_only)
+    print_check(res)
+    return 0 if res.ok else 1
+
+
+def run_check(a):
+    from shardkeep.check import check
+    ok = check(a.out, name=a.name, src=a.src, hf=a.hf, rclone=a.rclone, allow_skipped=a.allow_skipped,
+               compute_hashes=not a.size_only)
+    return 0 if ok else 1
+
+
+def add_upload(sub):
+    p = sub.add_parser("upload", help=COMMANDS["upload"], description=(
+        "Upload the archive folder to a Hugging Face dataset (created if needed) or to any rclone target. "
+        "Files that are already uploaded with the same content are skipped, so an interrupted upload can be "
+        "resumed by running the same command again. Log in to Hugging Face first: hf auth login."))
+    p.add_argument("out", help="archive folder")
+    _target(p)
+    vis = p.add_mutually_exclusive_group()
+    vis.add_argument("--private", action="store_true", help="create a private dataset (default)")
+    vis.add_argument("--public", action="store_true", help="create a public dataset")
+    p.add_argument("--force", action="store_true", help="upload even if some sets are not fully packed")
+    p.set_defaults(func=run_upload)
+
+
+def add_check_upload(sub):
+    p = sub.add_parser("check-upload", help=COMMANDS["check-upload"], description=(
+        "Compare the uploaded files with the local archive folder: file list, sizes and, where the storage "
+        "provides it, SHA-256 (Hugging Face always does for archives). Nothing is downloaded or changed."))
+    p.add_argument("out", help="archive folder")
+    _target(p)
+    p.add_argument("--size-only", action="store_true", help="compare sizes only, do not read local files")
+    p.set_defaults(func=run_check_upload)
+
+
+def add_check(sub):
+    p = sub.add_parser("check", help=COMMANDS["check"], description=(
+        "Run every check that matters before deleting the source data: archives are intact and match their "
+        "manifests, every source folder is fully packed and unchanged (the folder saved with each set, or --src), "
+        "and the archives are uploaded (--hf or --rclone). Prints a final verdict and writes check_report.txt."))
+    p.add_argument("out", help="archive folder")
+    p.add_argument("--name", help="check only this set")
+    p.add_argument("--src", help="source folder (default: the folder each set was packed from)")
+    _target(p, required=False)
+    p.add_argument("--allow-skipped", action="store_true",
+                   help="do not treat files that could not be read during packing as an error")
+    p.add_argument("--size-only", action="store_true", help="compare uploaded files by size only")
+    p.set_defaults(func=run_check)
+
+
 def run_verify(a):
     from shardkeep.verify import verify
     return 0 if verify(a.out, name=a.name, src=a.src, allow_skipped=a.allow_skipped).ok else 1
@@ -209,7 +290,8 @@ def add_unpack(sub):
     p.set_defaults(func=run_unpack)
 
 
-ADDERS = {"analyze": add_analyze, "compare-zip": add_compare_zip, "pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
+ADDERS = {"upload": add_upload, "check-upload": add_check_upload, "check": add_check,
+          "analyze": add_analyze, "compare-zip": add_compare_zip, "pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
 
 
 def build_parser():
