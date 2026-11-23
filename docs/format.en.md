@@ -82,6 +82,16 @@ The manifest is written last, after the shard file and the parameters file. A ma
 | `files`, `raw_bytes` | number and total size of files in the shard |
 | `compressed_bytes`, `sha256` | size and SHA-256 of the shard file. Verification uses them to catch a shard replaced after packing, and the remote check uses them to confirm an upload without downloading it |
 | `skipped` | files from the plan that could not be read. They are missing from the archive, and verification treats this as an error |
+| `jxl` | only with `--jxl`: JPEG files converted to JPEG XL, as `{"original path": {"member": "original path.jxl", "size": .jxl size, "sha256": .jxl SHA-256}}` |
+| `jxl_fallback` | how many JPEG files were kept as they are: conversion failed, the file was not restored byte for byte, or the .jxl was not smaller |
+
+## JPEG XL files (`pack --jxl`)
+
+With `--jxl`, every JPEG file is converted with `cjxl --lossless_jpeg=1` and immediately restored with `djxl`. The `.jxl` file goes into the archive only if the restored file has the same SHA-256 as the original and the `.jxl` is smaller. Otherwise the original JPEG is stored.
+
+Inside the archive such a file is named `<original path>.jxl`. The manifest keeps the original path, size and SHA-256 of the JPEG file, so `verify --src` and extraction by pattern work with the original names. The name mapping is in the `jxl` field of the shard parameters.
+
+When extracting, shardkeep and the `pack_shards.py` restore script restore the original JPEG with `djxl` and check it against the manifest. Without `djxl`, `--keep-jxl` extracts the `.jxl` files as they are. By hand: `djxl file.jpg.jxl file.jpg`.
 
 ## Plan (`plan.jsonl.gz`)
 
@@ -99,7 +109,7 @@ A gzip-compressed list of all files of the set in packing order: `{"s": shard nu
 }
 ```
 
-The fields on the first line exist in both formats. `level` is the level for well-compressible files on the first run, `level_low` the level for already compressed files (`null` when one level is used for everything), `profile` the compression profile. `excludes` and `include_env` are the file selection rules; `verify --src` uses them to find source files that did not reach the archives. `sessions` lists resumed runs and their parameters.
+`jxl` is `true` if the set was packed with `--jxl`. The fields on the first line exist in both formats. `level` is the level for well-compressible files on the first run, `level_low` the level for already compressed files (`null` when one level is used for everything), `profile` the compression profile. `excludes` and `include_env` are the file selection rules; `verify --src` uses them to find source files that did not reach the archives. `sessions` lists resumed runs and their parameters.
 
 ## Summary (`summary.json`)
 
@@ -112,6 +122,7 @@ Recomputed after every packing run:
 | `levels` | all levels the shards were compressed with (format 2) |
 | `planned_shards`, `complete` | number of shards in the plan and whether packing finished (format 2) |
 | `skipped_files` | how many files could not be read (format 2) |
+| `jxl_files`, `jxl_saved_bytes` | how many JPEG files were converted to JPEG XL and how many bytes this saved before compression (only with `--jxl`) |
 
 ## Format versions and compatibility
 
@@ -122,4 +133,4 @@ Rules kept when the format changes:
 
 1. A new shardkeep version verifies, extracts and resumes sets of all earlier formats.
 2. The folder layout, shard names and manifest lines do not change. New information goes into separate files or new JSON fields.
-3. The original `pack_shards.py` verifies and extracts format 2 archives: it ignores the extra files and fields.
+3. The original `pack_shards.py` verifies and extracts format 2 archives: it ignores the extra files and fields. The exception is sets packed with `--jxl`: the original script sees the `.jxl` files as unexpected and the original JPEG files as missing. Such sets need the `pack_shards.py` of the new version (it is placed next to the archives) or shardkeep.

@@ -2,11 +2,13 @@
 
 import fnmatch
 import os
+import shutil
 import tarfile
 
-from shardkeep import layout
+from shardkeep import jxl, layout
 from shardkeep.codecs import open_reader
-from shardkeep.fsutil import long_path
+from shardkeep.errors import UserError
+from shardkeep.fsutil import long_path, os_path
 from shardkeep.textfmt import num
 
 
@@ -25,9 +27,29 @@ def extract_member(tar, m, target_os):
     return True
 
 
-def unpack(out, dest, name=None, patterns=None, flat=False):
+def _restore_jpeg(djxl, tar, m, orig, exp, target_os):
+    """Восстанавливает исходный JPEG из .jxl в архиве и проверяет его по манифесту."""
+    if not _safe_name(orig):
+        return False
+    tmp, tmpdir = jxl.restore_member(djxl, tar.extractfile(m), target_os)
+    try:
+        if exp and (os.path.getsize(tmp) != exp["size"] or jxl._sha256(tmp) != exp["sha256"]):
+            raise UserError(f"JPEG restored from {m.name} differs from the original (SHA-256 mismatch)")
+        dst = os_path(target_os, orig)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.move(tmp, dst)
+        os.utime(dst, (m.mtime, m.mtime))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return True
+
+
+def unpack(out, dest, name=None, patterns=None, flat=False, keep_jxl=False):
+    """Распаковывает наборы. Файлы, переведенные в JPEG XL, восстанавливаются в исходные JPEG (нужен djxl);
+    keep_jxl=True оставляет их в виде .jxl."""
     dest = os.path.abspath(dest)
     os.makedirs(long_path(dest), exist_ok=True)
+    djxl = None
     total = 0
     for nm in layout.list_names(out, name):
         target = dest if flat else os.path.join(dest, nm)
@@ -36,14 +58,24 @@ def unpack(out, dest, name=None, patterns=None, flat=False):
         shards = layout.shard_list(out, nm)
         print(f"Extracting {nm} to {target}: {len(shards)} shards")
         for shard in shards:
+            info = layout.read_shard_meta(out, nm, shard.index)
+            jmap = {} if keep_jxl else jxl.member_map(info)
+            expected = layout.read_manifest(shard.manifest) if jmap else {}
+            if jmap and djxl is None:
+                djxl = jxl.require_tools(need_encoder=False)[1]
             n = 0
             with open_reader(shard.path) as rd:
                 with tarfile.open(fileobj=rd, mode="r|") as tar:
                     for m in tar:
-                        if patterns and not any(fnmatch.fnmatch(m.name, p) for p in patterns):
+                        orig = jmap.get(m.name)
+                        shown = orig or m.name
+                        if patterns and not any(fnmatch.fnmatch(shown, p) for p in patterns):
                             continue
-                        if extract_member(tar, m, target_os):
-                            n += 1
+                        if orig is not None:
+                            ok = _restore_jpeg(djxl, tar, m, orig, expected.get(orig), target_os)
+                        else:
+                            ok = extract_member(tar, m, target_os)
+                        n += ok
             total += n
             print(f"  {shard.filename}: {num(n)} files extracted")
     print("Done.")

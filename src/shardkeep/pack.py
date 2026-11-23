@@ -7,7 +7,7 @@ import os
 import tarfile
 import time
 
-from shardkeep import __version__, layout
+from shardkeep import __version__, jxl, layout
 from shardkeep.codecs import DEFAULT_LEVEL, WINDOW_LOG, CountingWriter, HashingReader, open_writer, pick_codec
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path, read_json, walk_files, write_json
@@ -34,9 +34,10 @@ class _ReadFailed(Exception):
 
 
 def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=None, shard_gb=None,
-         excludes=(), include_env=False, profile=None):
+         excludes=(), include_env=False, profile=None, use_jxl=None):
     """Упаковывает папку src в набор name внутри папки out. Повторный запуск продолжает упаковку.
 
+    use_jxl – переводить JPEG в JPEG XL без потерь (нужны cjxl и djxl, см. shardkeep.jxl).
     profile – профиль сжатия (см. shardkeep.profiles.PROFILES); level задает уровень для хорошо
     сжимаемых файлов. Параметры со значением None при продолжении берутся из сохраненных настроек набора.
     """
@@ -56,6 +57,10 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         codec, level, long_mode = _resume_settings(meta, name, codec, level, long_mode, shard_gb, excludes,
                                                    include_env, profile)
         level_low = meta.get("level_low")
+        if use_jxl is not None and bool(use_jxl) != bool(meta.get("jxl")):
+            print(f"Warning: --jxl is ignored: set {name} continues with the saved setting "
+                  f"(JPEG XL {'on' if meta.get('jxl') else 'off'}).")
+        use_jxl = bool(meta.get("jxl"))
         meta.setdefault("sessions", []).append({"started": _now(), "level": level, "long": long_mode,
                                                 "tool": TOOL})
         write_json(meta_path, meta)
@@ -68,6 +73,9 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
         level = high if level is None else level
         long_mode = prof.long if long_mode is None else bool(long_mode)
         shard_gb = shard_gb or DEFAULT_SHARD_GB
+        use_jxl = bool(use_jxl)
+        if use_jxl:
+            jxl.require_tools()
         print(f"Scanning {src} ...")
         files = walk_files(src, excludes, include_env)
         classes = None
@@ -84,13 +92,17 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
                 "shard_gb": shard_gb, "created": _now(),
                 "format": FORMAT_VERSION, "tool": TOOL, "profile": prof.name, "level_low": level_low,
                 "window_log": WINDOW_LOG if long_mode else None,
-                "excludes": list(excludes), "include_env": bool(include_env)}
+                "excludes": list(excludes), "include_env": bool(include_env), "jxl": use_jxl}
         write_json(meta_path, meta)
         save_plan(plan_path, plan)  # план последним: признак начатого набора
 
     groups = by_shard(plan)
     total = sum(e["n"] for e in plan)
     thread_cache = {}
+    jxl_tools = None
+    if use_jxl:
+        jxl_tools = jxl.require_tools()
+        print(f"JPEG XL: JPEG files are converted losslessly ({jxl.tool_version(jxl_tools[0]) or 'cjxl'})")
 
     def shard_params(entries):
         low_bytes = sum(e["n"] for e in entries if e.get("c") == LOW)
@@ -101,7 +113,8 @@ def pack(src, out, name=None, codec="auto", level=None, threads=0, long_mode=Non
             thread_cache[(lvl, lng)] = n
             if note:
                 print(note)
-        return {"codec": codec, "level": lvl, "long": lng, "threads": thread_cache[(lvl, lng)]}
+        return {"codec": codec, "level": lvl, "long": lng, "threads": thread_cache[(lvl, lng)],
+                "jxl_tools": jxl_tools, "workdir": layout.data_dir(out, name)}
 
     levels_txt = f"level {level}" + (f", already compressed files level {level_low}" if level_low is not None else "")
     print(f"Set {name}: {num(len(plan))} files, {human(total)}, {len(groups)} shards; "
@@ -183,10 +196,30 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
     cw = CountingWriter(writer)
     records = []
     skipped = [{"path": p, "error": err} for p, err in skip.items()]
+    jxl_map = {}
+    batch = None
     try:
+        if params.get("jxl_tools"):
+            batch = jxl.Batch(params["jxl_tools"], src_os,
+                              [e["p"] for e in entries if jxl.is_jpeg(e["p"]) and e["p"] not in skip],
+                              params["workdir"])
         tar = tarfile.open(fileobj=cw, mode="w|", format=tarfile.PAX_FORMAT)
         for e in entries:
             if e["p"] in skip:
+                continue
+            conv = batch.done.get(e["p"]) if batch else None
+            if conv is not None:
+                member = e["p"] + jxl.MEMBER_SUFFIX
+                ti = tarfile.TarInfo(member)
+                ti.size = conv.size
+                ti.mtime = conv.mtime
+                ti.mode = 0o644
+                with open(conv.jxl_path, "rb") as f:
+                    hr = HashingReader(f, hashlib.sha256())
+                    tar.addfile(ti, hr)
+                jxl_map[e["p"]] = {"member": member, "size": conv.size, "sha256": hr.h.hexdigest()}
+                records.append({"path": e["p"], "size": conv.orig_size, "mtime": conv.mtime,
+                                "sha256": conv.orig_sha256})
                 continue
             p = os_path(src_os, e["p"])
             try:
@@ -214,6 +247,8 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
         raise
     finally:
         writer.close()
+        if batch:
+            batch.close()
     comp = os.path.getsize(tmp_sf)
     with open(tmp_mf, "w", encoding="utf-8", newline="\n") as f:
         for r in records:
@@ -224,6 +259,9 @@ def _write_shard_once(src_os, entries, sf, mf, meta_f, params, skip):
             "threads": params["threads"] if params["codec"] == "zstd" else 1,
             "files": len(records), "raw_bytes": sum(r["size"] for r in records),
             "compressed_bytes": comp, "sha256": file_hash.hexdigest(), "skipped": skipped}
+    if batch:
+        info["jxl"] = jxl_map
+        info["jxl_fallback"] = len(batch.fallback)
     os.replace(tmp_sf, sf)
     write_json(meta_f, info)
     os.replace(tmp_mf, mf)  # манифест последним: признак готовой части
@@ -237,11 +275,12 @@ def write_summary(out, name):
     if os.path.exists(layout.plan_file(out, name)):
         plan = load_plan(layout.plan_file(out, name))
         planned = (max(e["s"] for e in plan) + 1) if plan else 0
-    files = raw = comp = skipped = 0
+    files = raw = comp = skipped = jxl_files = jxl_saved = 0
     levels = set()
     shards = layout.shard_list(out, name)
     for shard in shards:
-        for r in layout.read_manifest(shard.manifest).values():
+        manifest = layout.read_manifest(shard.manifest)
+        for r in manifest.values():
             files += 1
             raw += r["size"]
         comp += os.path.getsize(shard.path)
@@ -249,6 +288,9 @@ def write_summary(out, name):
         if info:
             levels.add(info["level"])
             skipped += len(info.get("skipped", []))
+            for path, v in (info.get("jxl") or {}).items():
+                jxl_files += 1
+                jxl_saved += manifest[path]["size"] - v["size"] if path in manifest else 0
         elif "level" in meta:
             levels.add(meta["level"])
     s = {"name": name, "codec": meta.get("codec", shards[0].codec if shards else None),
@@ -256,9 +298,14 @@ def write_summary(out, name):
          "raw_bytes": raw, "compressed_bytes": comp, "updated": _now(),
          "format": FORMAT_VERSION, "levels": sorted(levels), "planned_shards": planned,
          "complete": planned is not None and len(shards) == planned, "skipped_files": skipped}
+    if meta.get("jxl") or jxl_files:
+        s["jxl_files"] = jxl_files
+        s["jxl_saved_bytes"] = jxl_saved
     write_json(layout.summary_file(out, name), s)
     print(f"Total {name}: {num(files)} files, {human(raw)} -> {human(comp)} ({pct(comp, raw)}), "
           f"{len(shards)} shards" + (f" of {planned}" if planned is not None and planned != len(shards) else ""))
+    if jxl_files:
+        print(f"JPEG XL: {num(jxl_files)} JPEG files converted, {human(jxl_saved)} saved before compression")
     if skipped:
         print(f"Warning: {skipped} files could not be read and are missing from the archives "
               "(listed in the .meta.json files next to the manifests).")

@@ -35,7 +35,7 @@ def run_pack(a):
     from shardkeep.pack import pack
     pack(a.src, a.out, name=a.name, codec=a.codec, level=a.level, threads=a.threads,
          long_mode=False if a.no_long else None, shard_gb=a.shard_gb, excludes=a.exclude, include_env=a.include_env,
-         profile=a.profile)
+         profile=a.profile, use_jxl=True if a.jxl else None)
     from shardkeep.card import copy_restore_script, write_card
     copy_restore_script(a.out)
     write_card(a.out, card_overrides(a), mode="create")
@@ -241,7 +241,7 @@ def run_verify(a):
 
 def run_unpack(a):
     from shardkeep.unpack import unpack
-    unpack(a.out, a.dest, name=a.name, patterns=a.pattern, flat=a.flat)
+    unpack(a.out, a.dest, name=a.name, patterns=a.pattern, flat=a.flat, keep_jxl=a.keep_jxl)
     return 0
 
 
@@ -265,6 +265,9 @@ def add_pack(sub):
     p.add_argument("--exclude", action="append", default=[], help="name or path pattern to skip (repeatable)")
     p.add_argument("--include-env", action="store_true",
                    help="do not skip __pycache__, .git, venv and similar folders")
+    p.add_argument("--jxl", action="store_true",
+                   help="convert JPEG files to JPEG XL losslessly (about 20%% smaller, restored byte for byte; needs "
+                        "cjxl and djxl from libjxl for packing and restoring)")
     add_card_options(p, full=False)
     p.set_defaults(func=run_pack)
 
@@ -287,6 +290,8 @@ def add_unpack(sub):
     p.add_argument("--pattern", action="append",
                    help='extract only files matching a pattern, for example "*/scene_001*" (repeatable)')
     p.add_argument("--flat", action="store_true", help="do not create a subfolder named after the set")
+    p.add_argument("--keep-jxl", action="store_true",
+                   help="extract JPEG XL files as .jxl instead of restoring the original JPEG files (no djxl needed)")
     p.set_defaults(func=run_unpack)
 
 

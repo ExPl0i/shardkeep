@@ -3,10 +3,12 @@
 import datetime as dt
 import hashlib
 import os
+import shutil
 import tarfile
+import tempfile
 from dataclasses import dataclass, field
 
-from shardkeep import layout
+from shardkeep import jxl, layout
 from shardkeep.codecs import drain, open_reader
 from shardkeep.errors import UserError
 from shardkeep.fsutil import long_path, os_path, read_json, walk_files, write_text
@@ -27,13 +29,45 @@ class VerifyResult:
         self.problems.append(msg)
 
 
-def check_shard(shard, info=None):
+def _check_jxl_member(fo, name, orig, info, expected, djxl, workdir, bad):
+    """Файл, переведенный в JPEG XL: сверяется хеш .jxl, а если есть djxl, то и восстановленный JPEG."""
+    rec = info["jxl"][orig]
+    h = hashlib.sha256()
+    tmpdir = tempfile.mkdtemp(prefix="sk_verify_", dir=workdir) if djxl else None
+    try:
+        out = open(os.path.join(tmpdir, "f.jxl"), "wb") if tmpdir else None
+        try:
+            for b in iter(lambda: fo.read(8 << 20), b""):
+                h.update(b)
+                if out:
+                    out.write(b)
+        finally:
+            if out:
+                out.close()
+        if h.hexdigest() != rec["sha256"]:
+            bad.append(f"content mismatch {name}")
+            return
+        exp = expected.get(orig)
+        if djxl and exp:
+            back = os.path.join(tmpdir, "f.jpg")
+            if not jxl.decode(djxl, os.path.join(tmpdir, "f.jxl"), back):
+                bad.append(f"djxl cannot decode {name}")
+            elif os.path.getsize(back) != exp["size"] or jxl._sha256(back) != exp["sha256"]:
+                bad.append(f"JPEG restored from {name} differs from the original")
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def check_shard(shard, info=None, djxl=None):
     """Читает часть целиком и сверяет каждый файл с манифестом.
 
     info – параметры части (формат 2): дополнительно сверяются размер и SHA-256 самого файла части.
+    djxl – команда djxl: файлы, переведенные в JPEG XL, восстанавливаются и сверяются с исходными.
     Возвращает (список проблем, число файлов, записи манифеста).
     """
     expected = layout.read_manifest(shard.manifest)
+    jmap = jxl.member_map(info)
     seen = set()
     bad = []
     file_hash = hashlib.sha256()
@@ -43,8 +77,13 @@ def check_shard(shard, info=None):
                 for m in tar:
                     if not m.isfile():
                         continue
-                    h = hashlib.sha256()
                     fo = tar.extractfile(m)
+                    if m.name in jmap:
+                        orig = jmap[m.name]
+                        _check_jxl_member(fo, m.name, orig, info, expected, djxl, os.path.dirname(shard.path), bad)
+                        seen.add(orig)
+                        continue
+                    h = hashlib.sha256()
                     while True:
                         b = fo.read(8 << 20)
                         if not b:
@@ -111,6 +150,8 @@ def _sets_for_src(out, names, src):
 
 def verify(out, name=None, src=None, report=True, allow_skipped=False):
     res = VerifyResult()
+    djxl = jxl.find_tools()[1]
+    jxl_warned = False
     names = layout.list_names(out, name)
     src_sets = _sets_for_src(out, names, src) if src else set()
     for nm in names:
@@ -124,7 +165,13 @@ def verify(out, name=None, src=None, report=True, allow_skipped=False):
         skipped_paths = set()
         for shard in state.shards:
             info = layout.read_shard_meta(out, nm, shard.index)
-            bad, n, expected = check_shard(shard, info)
+            if info and info.get("jxl") and djxl is None and not jxl_warned:
+                jxl_warned = True
+                msg = ("JPEG XL files were checked by the hash of the .jxl data only: djxl is not installed, so the "
+                       "restored JPEG files were not compared with the originals")
+                print("  Warning: " + msg)
+                res.warnings.append(msg)
+            bad, n, expected = check_shard(shard, info, djxl)
             skipped = (info or {}).get("skipped", [])
             n_files += n
             archived.update(expected)

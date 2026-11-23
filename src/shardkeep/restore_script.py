@@ -18,6 +18,10 @@ Commands:
   Extract all sets (or one with --name; files matching --pattern only):
     python pack_shards.py unpack <archive folder> <destination>
 
+JPEG files that were converted to JPEG XL during packing (shardkeep pack --jxl) are restored
+byte for byte with djxl from libjxl (https://github.com/libjxl/libjxl/releases); with --keep-jxl
+they are extracted as .jxl files.
+
 Archive layout: data/<set>/<set>-NNNNN.tar.zst, manifest/<set>/<set>-NNNNN.jsonl.
 """
 
@@ -30,8 +34,11 @@ import json
 import lzma
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tarfile
+import tempfile
 
 try:
     from compression import zstd as _stdzstd  # Python 3.14+
@@ -111,6 +118,36 @@ def read_json(path):
     return json.loads(data.decode("utf-8"))
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(8 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def djxl_decode(djxl, fileobj, workdir):
+    """Writes a .jxl member to a temporary file and restores the JPEG. Returns (jpeg path, temp folder) or None."""
+    tmpdir = tempfile.mkdtemp(prefix="sk_djxl_", dir=workdir)
+    src, dst = os.path.join(tmpdir, "f.jxl"), os.path.join(tmpdir, "f.jpg")
+    with open(src, "wb") as f:
+        shutil.copyfileobj(fileobj, f, 8 << 20)
+    ok = subprocess.run([djxl, src, dst], capture_output=True).returncode == 0 and os.path.exists(dst)
+    if not ok:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return None
+    return dst, tmpdir
+
+
+def jxl_map(meta):
+    return {v["member"]: k for k, v in ((meta or {}).get("jxl") or {}).items()}
+
+
+def read_meta(mf):
+    p = mf[:-len(".jsonl")] + ".meta.json"
+    return read_json(p) if os.path.exists(p) else None
+
+
 def read_manifest(path):
     with open(path, encoding="utf-8") as f:
         return {r["path"]: r for r in (json.loads(line) for line in f if line.strip())}
@@ -152,8 +189,9 @@ def shards_of(out, name):
     return shards, problems
 
 
-def check_shard(path, mf, meta):
+def check_shard(path, mf, meta, djxl=None):
     expected = read_manifest(mf)
+    jmap = jxl_map(meta)
     seen, bad = set(), []
     h_file = hashlib.sha256()
     raw = None
@@ -164,8 +202,27 @@ def check_shard(path, mf, meta):
                 for m in tar:
                     if not m.isfile():
                         continue
-                    h = hashlib.sha256()
                     fo = tar.extractfile(m)
+                    if m.name in jmap:
+                        orig = jmap[m.name]
+                        seen.add(orig)
+                        if djxl:
+                            got = djxl_decode(djxl, fo, os.path.dirname(path))
+                            exp = expected.get(orig)
+                            if got is None:
+                                bad.append(f"djxl cannot decode {m.name}")
+                            else:
+                                if exp and sha256_file(got[0]) != exp["sha256"]:
+                                    bad.append(f"JPEG restored from {m.name} differs from the original")
+                                shutil.rmtree(got[1], ignore_errors=True)
+                        else:
+                            h = hashlib.sha256()
+                            for b in iter(lambda: fo.read(8 << 20), b""):
+                                h.update(b)
+                            if h.hexdigest() != meta["jxl"][orig]["sha256"]:
+                                bad.append(f"content mismatch {m.name}")
+                        continue
+                    h = hashlib.sha256()
                     for b in iter(lambda: fo.read(8 << 20), b""):
                         h.update(b)
                     exp = expected.get(m.name)
@@ -226,6 +283,7 @@ def cmd_verify(a):
     if a.src and len(names) > 1:
         sys.exit("With --src, choose the set with --name")
     total = 0
+    djxl = shutil.which("djxl")
     for name in names:
         man = os.path.join(a.out, "manifest", name)
         settings_path = os.path.join(man, "pack_settings.json")
@@ -237,9 +295,11 @@ def cmd_verify(a):
         problems += layout_problems
         known = set()
         for i, path, mf in shards:
-            meta_path = os.path.join(man, os.path.basename(mf)[:-6] + ".meta.json")
-            meta = read_json(meta_path) if os.path.exists(meta_path) else None
-            bad, n, expected = check_shard(path, mf, meta)
+            meta = read_meta(mf)
+            if meta and meta.get("jxl") and not djxl and "djxl" not in " ".join(warnings):
+                warnings.append("JPEG XL files were checked by the hash of the .jxl data only (djxl is not installed)")
+                print("  Warning: " + warnings[-1])
+            bad, n, expected = check_shard(path, mf, meta, djxl)
             skipped = (meta or {}).get("skipped", [])
             total += n
             known.update(expected)
@@ -300,14 +360,36 @@ def cmd_unpack(a):
         os.makedirs(target, exist_ok=True)
         shards, _ = shards_of(a.out, name)
         print(f"Extracting {name}: {len(shards)} shards")
-        for _, path, _ in shards:
+        for _, path, mf in shards:
             n = 0
+            meta = read_meta(mf)
+            jmap = {} if a.keep_jxl else jxl_map(meta)
+            expected = read_manifest(mf) if jmap else {}
+            djxl = shutil.which("djxl") if jmap else None
+            if jmap and not djxl:
+                sys.exit("This set contains JPEG files converted to JPEG XL. Install djxl from libjxl "
+                         "(https://github.com/libjxl/libjxl/releases) to restore them, or use --keep-jxl.")
             rd, raw = open_reader(path)
             try:
                 with rd:
                     with tarfile.open(fileobj=rd, mode="r|") as tar:
                         for m in tar:
-                            if a.pattern and not any(fnmatch.fnmatch(m.name, p) for p in a.pattern):
+                            orig = jmap.get(m.name)
+                            if a.pattern and not any(fnmatch.fnmatch(orig or m.name, p) for p in a.pattern):
+                                continue
+                            if orig is not None:
+                                if not safe_name(orig):
+                                    continue
+                                got = djxl_decode(djxl, tar.extractfile(m), target)
+                                exp = expected.get(orig)
+                                if got is None or (exp and sha256_file(got[0]) != exp["sha256"]):
+                                    sys.exit(f"Could not restore {orig} from {m.name} byte for byte")
+                                dst = os_path(target, orig)
+                                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                                shutil.move(got[0], dst)
+                                shutil.rmtree(got[1], ignore_errors=True)
+                                os.utime(dst, (m.mtime, m.mtime))
+                                n += 1
                                 continue
                             try:
                                 tar.extract(m, target, filter="data")
@@ -344,6 +426,7 @@ def main():
     p.add_argument("--name", help="extract only this set")
     p.add_argument("--pattern", action="append", help="extract only files matching a pattern (repeatable)")
     p.add_argument("--flat", action="store_true", help="do not create a subfolder named after the set")
+    p.add_argument("--keep-jxl", action="store_true", help="extract JPEG XL files as .jxl (no djxl needed)")
     p.set_defaults(func=cmd_unpack)
     for cmd in ("pack", "card"):
         p = sub.add_parser(cmd, help="not available in this script, install shardkeep")
