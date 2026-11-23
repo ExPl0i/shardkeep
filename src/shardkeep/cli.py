@@ -136,6 +136,23 @@ def add_analyze(sub):
     p.set_defaults(func=run_analyze)
 
 
+def run_compare_zip(a):
+    from shardkeep.compare_zip import compare_zip
+    return 0 if compare_zip(a.zip, a.folder, crc=a.crc, test=a.test).complete else 1
+
+
+def add_compare_zip(sub):
+    p = sub.add_parser("compare-zip", help=COMMANDS["compare-zip"], description=(
+        "Check that a zip archive contains every file of an extracted folder, before deleting one of them. "
+        "Files are matched by name and path; the archive may have an extra top-level folder. Read-only."))
+    p.add_argument("zip", help="zip archive")
+    p.add_argument("folder", help="extracted folder")
+    p.add_argument("--crc", action="store_true",
+                   help="also compare CRC32 checksums (reads every file of the folder, the archive is not extracted)")
+    p.add_argument("--test", action="store_true", help="also test archive integrity (decompresses it in memory)")
+    p.set_defaults(func=run_compare_zip)
+
+
 def run_verify(a):
     from shardkeep.verify import verify
     return 0 if verify(a.out, name=a.name, src=a.src, allow_skipped=a.allow_skipped).ok else 1
@@ -192,7 +209,7 @@ def add_unpack(sub):
     p.set_defaults(func=run_unpack)
 
 
-ADDERS = {"analyze": add_analyze, "pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
+ADDERS = {"analyze": add_analyze, "compare-zip": add_compare_zip, "pack": add_pack, "verify": add_verify, "unpack": add_unpack, "card": add_card}
 
 
 def build_parser():
